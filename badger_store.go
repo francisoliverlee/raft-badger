@@ -14,6 +14,11 @@ import (
 const (
 	debugFlag = "raftBadgerDebug"
 )
+const (
+	FsmCommandGet    = "get"
+	FsmCommandSet    = "set"
+	FsmCommandDelete = "del"
+)
 
 var (
 	dbLogPrefixKey  = []byte("_rbl_")    // raft badger log
@@ -35,7 +40,7 @@ type BadgerStore struct {
 type Stats struct {
 }
 
-type fsmCommand struct {
+type FsmCommand struct {
 	Op    string `json:"op,omitempty"`
 	Key   string `json:"key,omitempty"`
 	Value string `json:"value,omitempty"`
@@ -263,8 +268,13 @@ func (b *BadgerStore) GetFromBadger(k []byte) (val []byte, err error) {
 	return val, err
 }
 
+func (f *BadgerStore) GetAppliedValue(k string) ([]byte, error) {
+	key := encodeKey(fsmKeyPrefix, []byte(k))
+	return f.GetFromBadger(key)
+}
+
 func (f *BadgerStore) Apply(l *raft.Log) interface{} {
-	var c fsmCommand
+	var c FsmCommand
 	if err := json.Unmarshal(l.Data, &c); err != nil {
 		panic(fmt.Sprintf("failed to do apply unmarshal, error: %s", err.Error()))
 	}
@@ -272,18 +282,32 @@ func (f *BadgerStore) Apply(l *raft.Log) interface{} {
 	key := encodeKey(fsmKeyPrefix, []byte(c.Key))
 
 	switch c.Op {
-	case "set":
+	case FsmCommandSet:
 		if err := f.db.Update(func(txn *badger.Txn) error {
 			return txn.Set(key, []byte(c.Value))
 		}); err != nil {
 			panic(fmt.Sprintf("failed to apply set. %s=%s %s", string(key), c.Value, err.Error()))
 		}
-	case "delete":
+	case FsmCommandDelete:
 		if err := f.db.Update(func(txn *badger.Txn) error {
 			return txn.Delete(key)
 		}); err != nil {
 			panic(fmt.Sprintf("failed to apply delete. %s=%s %s", string(key), c.Value, err.Error()))
 		}
+	case FsmCommandGet:
+		if err := f.db.View(func(txn *badger.Txn) error {
+			if item, err := txn.Get(key); err != nil {
+				return err
+			} else {
+				return item.Value(func(val []byte) error {
+					c.Value = string(val)
+					return err
+				})
+			}
+		}); err != nil {
+			panic(fmt.Sprintf("failed to apply delete. %s=%s %s", string(key), c.Value, err.Error()))
+		}
+		return c
 	default:
 		panic(fmt.Sprintf("failed to do apply %s for unknown . %s=%s", c.Op, string(key), c.Value))
 	}
