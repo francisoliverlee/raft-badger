@@ -292,6 +292,9 @@ func (f *BadgerStore) Apply(l *raft.Log) interface{} {
 		if err := f.db.Update(func(txn *badger.Txn) error {
 			return txn.Delete(key)
 		}); err != nil {
+			if errors.Is(err, badger.ErrKeyNotFound) {
+				panic(raft.ErrLogNotFound)
+			}
 			panic(fmt.Sprintf("failed to apply delete. %s=%s %s", string(key), c.Value, err.Error()))
 		}
 	case FsmCommandGet:
@@ -305,7 +308,10 @@ func (f *BadgerStore) Apply(l *raft.Log) interface{} {
 				})
 			}
 		}); err != nil {
-			panic(fmt.Sprintf("failed to apply delete. %s=%s %s", string(key), c.Value, err.Error()))
+			if errors.Is(err, badger.ErrKeyNotFound) {
+				panic(raft.ErrLogNotFound)
+			}
+			panic(fmt.Sprintf("failed to apply get. %s=%s %s", string(key), c.Value, err.Error()))
 		}
 		return c
 	default:
