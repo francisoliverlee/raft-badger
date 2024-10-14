@@ -67,6 +67,7 @@ func TestBadgerOptionsReadOnly(t *testing.T) {
 	op := testGenOption(fh.Name())
 
 	store, err := New(op)
+
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
