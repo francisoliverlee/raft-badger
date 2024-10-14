@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/dgraph-io/badger/v4"
 	"github.com/hashicorp/raft"
+	errors2 "github.com/pkg/errors"
 	"io"
 	"log"
 	"os"
@@ -44,6 +45,8 @@ type FsmCommand struct {
 	Op    string `json:"op,omitempty"`
 	Key   string `json:"key,omitempty"`
 	Value string `json:"value,omitempty"`
+
+	Error error `json:"-"` // response
 }
 
 type fsmSnapshot struct {
@@ -276,7 +279,8 @@ func (f *BadgerStore) GetAppliedValue(k string) ([]byte, error) {
 func (f *BadgerStore) Apply(l *raft.Log) interface{} {
 	var c FsmCommand
 	if err := json.Unmarshal(l.Data, &c); err != nil {
-		panic(fmt.Sprintf("failed to do apply unmarshal, error: %s", err.Error()))
+		c.Error = errors2.Wrap(err, fmt.Sprintf("failed to do apply unmarshal, key: %s", c.Key))
+		return c
 	}
 
 	key := encodeKey(fsmKeyPrefix, []byte(c.Key))
@@ -286,16 +290,13 @@ func (f *BadgerStore) Apply(l *raft.Log) interface{} {
 		if err := f.db.Update(func(txn *badger.Txn) error {
 			return txn.Set(key, []byte(c.Value))
 		}); err != nil {
-			panic(fmt.Sprintf("failed to apply set. %s=%s %s", string(key), c.Value, err.Error()))
+			c.Error = errors2.Wrap(err, fmt.Sprintf("failed to apply set key: %s", string(key)))
 		}
 	case FsmCommandDelete:
 		if err := f.db.Update(func(txn *badger.Txn) error {
 			return txn.Delete(key)
 		}); err != nil {
-			if errors.Is(err, badger.ErrKeyNotFound) {
-				panic(raft.ErrLogNotFound)
-			}
-			panic(fmt.Sprintf("failed to apply delete. %s=%s %s", string(key), c.Value, err.Error()))
+			c.Error = errors2.Wrap(err, fmt.Sprintf("failed to apply delete key: %s", string(key)))
 		}
 	case FsmCommandGet:
 		if err := f.db.View(func(txn *badger.Txn) error {
@@ -308,17 +309,13 @@ func (f *BadgerStore) Apply(l *raft.Log) interface{} {
 				})
 			}
 		}); err != nil {
-			if errors.Is(err, badger.ErrKeyNotFound) {
-				panic(raft.ErrLogNotFound)
-			}
-			panic(fmt.Sprintf("failed to apply get. %s=%s %s", string(key), c.Value, err.Error()))
+			c.Error = errors2.Wrap(err, fmt.Sprintf("failed to apply get. %s=%s %s", string(key)))
 		}
-		return c
 	default:
-		panic(fmt.Sprintf("failed to do apply %s for unknown . %s=%s", c.Op, string(key), c.Value))
+		c.Error = errors.New(fmt.Sprintf("unknown command: %s. key: %s ", c.Op, c.Key))
 	}
 
-	return nil
+	return c
 }
 
 func (f *BadgerStore) Snapshot() (raft.FSMSnapshot, error) {
