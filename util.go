@@ -17,8 +17,8 @@ func encodeKey(prefix, userKey []byte) []byte {
 }
 
 func encodeRaftLogKey(idx uint64) []byte {
-	buf := bytes.NewBuffer(make([]byte, len(dbLogPrefixKey)+8))
-	_ = binary.Write(buf, binary.BigEndian, dbLogPrefixKey)
+	buf := bytes.NewBuffer(make([]byte, len(LogBucket)+8))
+	_ = binary.Write(buf, binary.BigEndian, LogBucket)
 	_ = binary.Write(buf, binary.BigEndian, idx)
 
 	return buf.Bytes()
@@ -28,10 +28,8 @@ func encodeRaftLog(l *raft.Log) ([]byte, error) {
 	return json.Marshal(*l)
 }
 
-func decodeRaftLog(val []byte) (*raft.Log, error) {
-	var l raft.Log
-	err := json.Unmarshal(val, &l)
-	return &l, err
+func decodeRaftLog(val []byte, l *raft.Log) error {
+	return json.Unmarshal(val, &l)
 }
 
 func bytesToUint64(b []byte) uint64 {

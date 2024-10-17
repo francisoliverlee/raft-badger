@@ -15,7 +15,7 @@ import (
 	"github.com/hashicorp/raft"
 )
 
-func testBadgerStore(t testing.TB) *BadgerStore {
+func testBadgerStore(t testing.TB) *RaftStore {
 	fh, err := ioutil.TempFile("", "raft_badger_store")
 	if err != nil {
 		t.Fatalf("err: %s", err)
@@ -47,12 +47,12 @@ func testGenOption(path string) *Options {
 }
 
 func TestBadgerStore_Implements(t *testing.T) {
-	var store interface{} = &BadgerStore{}
+	var store interface{} = &RaftStore{}
 	if _, ok := store.(raft.StableStore); !ok {
-		t.Fatalf("BadgerStore does not implement raft.StableStore")
+		t.Fatalf("RaftStore does not implement raft.StableStore")
 	}
 	if _, ok := store.(raft.LogStore); !ok {
-		t.Fatalf("BadgerStore does not implement raft.LogStore")
+		t.Fatalf("RaftStore does not implement raft.LogStore")
 	}
 }
 
@@ -255,9 +255,8 @@ func TestBadgerStore_EncodeDecodeLog(t *testing.T) {
 	v, err1 := encodeRaftLog(log)
 	assert.True(t, err1 == nil)
 
-	log1, err2 := decodeRaftLog(v)
-
-	assert.True(t, err2 == nil)
+	var log1 *raft.Log
+	assert.True(t, decodeRaftLog(v, log1) == nil)
 	assert.True(t, log1 != nil)
 	assert.True(t, log1.Index == log.Index)
 
