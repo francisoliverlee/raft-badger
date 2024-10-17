@@ -11,11 +11,11 @@ raft log store based on badger
 - stable_store.go
 
 ```
-raft log store based on badger
+stable log store based on badger ( for config)
 ```
 
 - fsm.go
 
 ```
-raft log store based on badger
+fsm store based on badger ( for client)
 ```
