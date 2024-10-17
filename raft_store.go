@@ -53,9 +53,8 @@ func (o *RaftStore) readOnly() bool {
 }
 
 func NewBadgerStore(path string) (*RaftStore, error) {
-	db, err := kvstore.NewBadgerStore(badger.Options{
-		Dir: path,
-	})
+	db, err := kvstore.NewBadgerStore(badger.DefaultOptions(path))
+
 	if err != nil {
 		return nil, err
 	}
