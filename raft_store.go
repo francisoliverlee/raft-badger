@@ -19,11 +19,17 @@ const (
 )
 
 var (
-	Emptybucket  = []byte{}
-	LogBucket    = []byte("_rbl_")    // raft badger log
-	ConfigBucket = []byte("_rbl_cf_") // raft badger log config
+	EmptyBucket       = []byte{}
+	EmptyBucketLength = 0
 
-	FsmBucket = []byte("_fmsl_") // raft badger log config
+	LogBucket       = []byte("_rbl_") // raft badger log
+	LogBucketLength = len(LogBucket)
+
+	ConfigBucket       = []byte("_rbl_cf_") // raft badger log config
+	ConfigBucketLength = len(ConfigBucket)
+
+	FsmBucket       = []byte("_fmsl_") // raft badger log config
+	FsmBucketLength = len(FsmBucket)
 
 	firstIndexKey = []byte("_first_k")
 	lastIndexKey  = []byte("_last_k")
@@ -31,6 +37,8 @@ var (
 
 type RaftStore struct {
 	db kvstore.KvStore
+
+	path string
 }
 
 type Stats struct {
@@ -48,52 +56,30 @@ type fsmSnapshot struct {
 	store map[string]string
 }
 
-func (o *RaftStore) readOnly() bool {
-	return o.db.ReadOnly()
-}
+func NewBadgerStore(path string, readOnly bool) (*RaftStore, error) {
+	opt := badger.DefaultOptions(path)
+	opt.ReadOnly = readOnly
 
-func NewBadgerStore(path string) (*RaftStore, error) {
-	db, err := kvstore.NewBadgerStore(badger.DefaultOptions(path))
+	db, err := kvstore.NewBadgerStore(opt)
 
 	if err != nil {
 		return nil, err
 	}
 
 	store := &RaftStore{
-		db: db,
+		db:   db,
+		path: path,
 	}
 
 	return store, nil
 }
 
-func (b *RaftStore) Set(k, v []byte) error {
-	return b.db.Set(ConfigBucket, k, v)
+func (o *RaftStore) ReadOnly() bool {
+	return o.db.ReadOnly()
 }
 
-func (b *RaftStore) Get(k []byte) (val []byte, e error) {
-	val, _, err := b.db.Get(ConfigBucket, k)
-
-	if errors.Is(err, badger.ErrKeyNotFound) {
-		val = []byte{}
-		err = nil
-	}
-	return val, err
-}
-
-func (b *RaftStore) SetUint64(key []byte, val uint64) error {
-	return b.Set(key, uint64ToBytes(val))
-}
-
-func (b *RaftStore) GetUint64(key []byte) (uint64, error) {
-	val, err := b.Get(key)
-	if err != nil {
-		return 0, err
-	}
-	if len(val) == 0 {
-
-		return 0, nil
-	}
-	return bytesToUint64(val), nil
+func (o *RaftStore) Path() string {
+	return o.path
 }
 
 func (b *RaftStore) setFirstIndex(tx *badger.Txn, first uint64) error {
@@ -128,6 +114,36 @@ func (b *RaftStore) getLastIndex() (uint64, error) {
 	}
 }
 
+func (b *RaftStore) Set(k, v []byte) error {
+	return b.db.Set(ConfigBucket, k, v)
+}
+
+func (b *RaftStore) Get(k []byte) (val []byte, e error) {
+	val, _, err := b.db.Get(ConfigBucket, k)
+
+	if errors.Is(err, badger.ErrKeyNotFound) {
+		val = []byte{}
+		err = nil
+	}
+	return val, err
+}
+
+func (b *RaftStore) SetUint64(key []byte, val uint64) error {
+	return b.Set(key, uint64ToBytes(val))
+}
+
+func (b *RaftStore) GetUint64(key []byte) (uint64, error) {
+	val, err := b.Get(key)
+	if err != nil {
+		return 0, err
+	}
+	if len(val) == 0 {
+
+		return 0, nil
+	}
+	return bytesToUint64(val), nil
+}
+
 func (b *RaftStore) FirstIndex() (uint64, error) {
 	return b.getFirstIndex()
 }
@@ -139,7 +155,7 @@ func (b *RaftStore) LastIndex() (uint64, error) {
 func (b *RaftStore) GetLog(idx uint64, log *raft.Log) error {
 	val, found, err := b.db.Get(LogBucket, uint64ToBytes(idx))
 	if !found {
-		return errors.New(fmt.Sprintf("raft log not found for idx=%d", idx))
+		return raft.ErrLogNotFound
 	}
 	if err != nil {
 		return errors.New(fmt.Sprintf("get raft log error for idx=%d", idx))
@@ -159,13 +175,16 @@ func (b *RaftStore) StoreLogs(logs []*raft.Log) error {
 	var values [][]byte
 
 	for _, rlog := range logs {
-		key := uint64ToBytes(rlog.Index)
+		idxB := uint64ToBytes(rlog.Index)
+
+		newKey := kvstore.AppendBytes(LogBucketLength+8, LogBucket, idxB)
 		val, err := encodeRaftLog(rlog)
+
 		if err != nil {
 			return err
 		}
 
-		keys = append(keys, key)
+		keys = append(keys, newKey)
 		values = append(values, val)
 
 		if rlog.Index == 1 { // set first index
@@ -177,7 +196,7 @@ func (b *RaftStore) StoreLogs(logs []*raft.Log) error {
 		values = append(values, uint64ToBytes(rlog.Index))
 	}
 
-	return b.db.PSet(Emptybucket, keys, values)
+	return b.db.PSet(EmptyBucket, keys, values)
 }
 
 func (b *RaftStore) DeleteRange(minIdx, maxIdx uint64) error {
@@ -188,8 +207,8 @@ func (b *RaftStore) DeleteRange(minIdx, maxIdx uint64) error {
 	// TODO optimise when diff very big, such as 1000K
 	return b.db.Exec(func(txn *badger.Txn) error {
 		for i := minIdx; i <= maxIdx; i++ {
-			key := encodeRaftLogKey(i)
-			if err := txn.Delete(key); err != nil {
+			newKey := kvstore.AppendBytes(LogBucketLength+8, LogBucket, uint64ToBytes(i))
+			if err := txn.Delete(newKey); err != nil {
 				return err
 			}
 		}
@@ -202,7 +221,7 @@ func (b *RaftStore) DeleteRange(minIdx, maxIdx uint64) error {
 }
 
 func (b *RaftStore) GetFromBadger(k []byte) (val []byte, err error) {
-	v, _, err := b.db.Get(Emptybucket, k)
+	v, _, err := b.db.Get(EmptyBucket, k)
 	if err != nil {
 		return nil, err
 	}

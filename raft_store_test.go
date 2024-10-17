@@ -23,7 +23,7 @@ func testBadgerStore(t testing.TB) *RaftStore {
 	os.Remove(fh.Name())
 
 	// Successfully creates and returns a store
-	store, err := NewBadgerStore(fh.Name())
+	store, err := NewBadgerStore(fh.Name(), false)
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -38,14 +38,7 @@ func testRaftLog(idx uint64, data string) *raft.Log {
 	}
 }
 
-func testGenOption(path string) *Options {
-	op := badger.DefaultOptions(path)
-	return &Options{
-		BadgerOptions:               &op,
-		BatchSizeOfDeleteLogEntries: 100,
-	}
-}
-
+// test implement
 func TestBadgerStore_Implements(t *testing.T) {
 	var store interface{} = &RaftStore{}
 	if _, ok := store.(raft.StableStore); !ok {
@@ -56,6 +49,7 @@ func TestBadgerStore_Implements(t *testing.T) {
 	}
 }
 
+// test read only
 func TestBadgerOptionsReadOnly(t *testing.T) {
 	fh, err := ioutil.TempFile("", "raft_badger_store")
 	if err != nil {
@@ -64,9 +58,7 @@ func TestBadgerOptionsReadOnly(t *testing.T) {
 	os.Remove(fh.Name())
 	defer os.Remove(fh.Name())
 
-	op := testGenOption(fh.Name())
-
-	store, err := New(op)
+	store, err := NewBadgerStore(fh.Name(), false)
 
 	if err != nil {
 		t.Fatalf("err: %s", err)
@@ -82,9 +74,8 @@ func TestBadgerOptionsReadOnly(t *testing.T) {
 	}
 
 	store.Close()
-	options := testGenOption(fh.Name())
-	options.BadgerOptions.ReadOnly = true
-	roStore, err := New(options)
+
+	roStore, err := NewBadgerStore(fh.Name(), true)
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -105,6 +96,7 @@ func TestBadgerOptionsReadOnly(t *testing.T) {
 	}
 }
 
+// test new raft badger store
 func TestNewBadgerStore(t *testing.T) {
 	fh, err := ioutil.TempFile("", "raft_badger_store")
 	if err != nil {
@@ -114,15 +106,11 @@ func TestNewBadgerStore(t *testing.T) {
 	defer os.Remove(fh.Name())
 
 	// Successfully creates and returns a store
-	store, err := NewBadgerStore(fh.Name())
+	store, err := NewBadgerStore(fh.Name(), false)
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
 
-	// Ensure the file was created
-	if store.option.BadgerOptions.Dir != fh.Name() {
-		t.Fatalf("unexpected file path %q", store.option.BadgerOptions.Dir)
-	}
 	if _, err := os.Stat(fh.Name()); err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -132,21 +120,15 @@ func TestNewBadgerStore(t *testing.T) {
 		t.Fatalf("err: %s", err)
 	}
 
-	// Ensure our tables were created
-	var op = testGenOption(fh.Name())
-	db, err := badger.Open(*op.BadgerOptions)
-	if err != nil {
-		t.Fatalf("err: %s", err)
-	}
-	db.Sync()
 }
 
+// test update first index
 func TestBadgerStore_FirstIndex(t *testing.T) {
 	log.SetOutput(os.Stdout)
 
 	store := testBadgerStore(t)
 	defer store.Close()
-	defer os.Remove(store.option.BadgerOptions.Dir)
+	defer os.Remove(store.Path())
 
 	// Should get 0 index on empty log
 	idx, err := store.FirstIndex()
@@ -177,10 +159,11 @@ func TestBadgerStore_FirstIndex(t *testing.T) {
 	}
 }
 
+// test update latest index
 func TestBadgerStore_LastIndex(t *testing.T) {
 	store := testBadgerStore(t)
 	defer store.Close()
-	defer os.Remove(store.option.BadgerOptions.Dir)
+	defer os.Remove(store.Path())
 
 	// Should get 0 index on empty log
 	idx, err := store.LastIndex()
@@ -211,10 +194,12 @@ func TestBadgerStore_LastIndex(t *testing.T) {
 	}
 }
 
+// test get non-exist log
+// test store log, get log
 func TestBadgerStore_GetLog(t *testing.T) {
 	store := testBadgerStore(t)
 	defer store.Close()
-	defer os.Remove(store.option.BadgerOptions.Dir)
+	defer os.Remove(store.Path())
 
 	log := new(raft.Log)
 
@@ -242,6 +227,7 @@ func TestBadgerStore_GetLog(t *testing.T) {
 	}
 }
 
+// test log encode and decode
 func TestBadgerStore_EncodeDecodeLog(t *testing.T) {
 	log := &raft.Log{
 		Index:      1,
@@ -255,17 +241,18 @@ func TestBadgerStore_EncodeDecodeLog(t *testing.T) {
 	v, err1 := encodeRaftLog(log)
 	assert.True(t, err1 == nil)
 
-	var log1 *raft.Log
+	var log1 = &raft.Log{}
 	assert.True(t, decodeRaftLog(v, log1) == nil)
 	assert.True(t, log1 != nil)
 	assert.True(t, log1.Index == log.Index)
 
 }
 
+// test set log
 func TestBadgerStore_SetLog(t *testing.T) {
 	store := testBadgerStore(t)
 	defer store.Close()
-	defer os.Remove(store.option.BadgerOptions.Dir)
+	defer os.Remove(store.Path())
 
 	// Create the log
 	log := &raft.Log{
@@ -290,10 +277,11 @@ func TestBadgerStore_SetLog(t *testing.T) {
 	}
 }
 
+// test set logs
 func TestBadgerStore_SetLogs(t *testing.T) {
 	store := testBadgerStore(t)
 	defer store.Close()
-	defer os.Remove(store.option.BadgerOptions.Dir)
+	defer os.Remove(store.Path())
 
 	// Create a set of logs
 	logs := []*raft.Log{
@@ -322,10 +310,11 @@ func TestBadgerStore_SetLogs(t *testing.T) {
 	}
 }
 
+// test add, delete logs, test first index and last index changed
 func TestBadgerStore_DeleteRange(t *testing.T) {
 	store := testBadgerStore(t)
 	defer store.Close()
-	defer os.Remove(store.option.BadgerOptions.Dir)
+	defer os.Remove(store.Path())
 
 	// Create a set of logs
 	log1 := testRaftLog(1, "log1")
@@ -345,17 +334,28 @@ func TestBadgerStore_DeleteRange(t *testing.T) {
 
 	// Ensure the logs were deleted
 	if err := store.GetLog(1, new(raft.Log)); err != raft.ErrLogNotFound {
-		t.Fatalf("should have deleted log1")
+		t.Fatalf("should have deleted log1 %+v", err)
 	}
 	if err := store.GetLog(2, new(raft.Log)); err != raft.ErrLogNotFound {
 		t.Fatalf("should have deleted log2")
 	}
+
+	// Ensure first index changed
+	if fIdx, err := store.getFirstIndex(); fIdx != 3 {
+		t.Fatalf("first index wrong after delete logs, should 3 but %d. %+v", fIdx, err)
+	}
+
+	// Ensure last index changed
+	if lIdx, err := store.getLastIndex(); lIdx != 3 {
+		t.Fatalf("last index wrong after add logs, should 3 but %d. %+v", lIdx, err)
+	}
 }
 
+// test set get log config
 func TestBadgerStore_Set_Get(t *testing.T) {
 	store := testBadgerStore(t)
 	defer store.Close()
-	defer os.Remove(store.option.BadgerOptions.Dir)
+	defer os.Remove(store.Path())
 
 	// Returns error on non-existent key
 	if _, err := store.Get([]byte("bad")); err != nil {
@@ -379,10 +379,11 @@ func TestBadgerStore_Set_Get(t *testing.T) {
 	}
 }
 
+// test uint64 to bytes
 func TestBadgerStore_SetUint64_GetUint64(t *testing.T) {
 	store := testBadgerStore(t)
 	defer store.Close()
-	defer os.Remove(store.option.BadgerOptions.Dir)
+	defer os.Remove(store.Path())
 
 	// Returns error on non-existent key
 	if _, err := store.GetUint64([]byte("bad")); err != nil {

@@ -57,7 +57,7 @@ func (s *Peer) Open(enableSingle bool, localID string) error {
 		return fmt.Errorf("file snapshot store: %s", err)
 	}
 
-	badgerStore, err := NewBadgerStore(filepath.Join(s.RaftDir, "raft.log"))
+	badgerStore, err := NewBadgerStore(filepath.Join(s.RaftDir, "raft.log"), false)
 	if err != nil {
 		return fmt.Errorf("new badger store: %s", err)
 	}
