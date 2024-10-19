@@ -26,8 +26,11 @@ type Peer struct {
 	raft *raft.Raft // The consensus mechanism
 }
 
-func NewPeer() *Peer {
-	return &Peer{}
+func NewPeer(dir, bind string) *Peer {
+	return &Peer{
+		RaftDir:  dir,
+		RaftBind: bind,
+	}
 }
 
 func (s *Peer) MakeSureLeader() error {
