@@ -55,7 +55,16 @@ func (s *Peer) Set(bucket, k, v string) error {
 	}
 
 	f := s.raft.Apply(b, raftTimeout)
-	return f.Error()
+	if e1 := f.Error(); e1 != nil {
+		return e1
+	}
+
+	var c2, ok = f.Response().(FsmCommand)
+	if !ok {
+		log.Printf("[Error] %s should got FsmCommand but not. Response: %v", c.Op, f.Response())
+		return errors.New("fsm response type error")
+	}
+	return c2.Error
 }
 
 func (s *Peer) Get(bucket, k string) (result string, found bool, e error) {
@@ -69,16 +78,21 @@ func (s *Peer) Get(bucket, k string) (result string, found bool, e error) {
 	}
 
 	f := s.raft.Apply(b, raftTimeout)
-	if c2, ok := f.Response().(FsmCommand); ok {
-		if c2.Error != nil {
-			return "", false, c2.Error
-		}
-		result, found := c2.Kv[newKey]
-		return result, found, nil
-	} else {
-		log.Fatalf("[BUG %s] should got FsmCommand, but not.Response: %v", FsmCommandGet, f.Response())
-		return "", false, errors.New("invalid response")
+
+	if e1 := f.Error(); e1 != nil {
+		return "", false, e1
 	}
+
+	var c2, ok = f.Response().(FsmCommand)
+	if !ok {
+		log.Printf("[Error] %s should got FsmCommand but not. Response: %v", c.Op, f.Response())
+		return "", false, errors.New("fsm response type error")
+	}
+	if c2.Error != nil {
+		return "", false, c2.Error
+	}
+	result, found = c2.Kv[newKey]
+	return result, found, nil
 }
 
 func (s *Peer) PSet(bucket string, kv map[string]string) error {
@@ -97,7 +111,16 @@ func (s *Peer) PSet(bucket string, kv map[string]string) error {
 	}
 
 	f := s.raft.Apply(b, raftTimeout)
-	return f.Error()
+	if e1 := f.Error(); e1 != nil {
+		return e1
+	}
+
+	var c2, ok = f.Response().(FsmCommand)
+	if !ok {
+		log.Printf("[Error] %s should got FsmCommand but not. Response: %v", c.Op, f.Response())
+		return errors.New("fsm response type error")
+	}
+	return c2.Error
 }
 
 func (s *Peer) PGet(bucket string, keys []string) (map[string]string, error) {
@@ -115,18 +138,20 @@ func (s *Peer) PGet(bucket string, keys []string) (map[string]string, error) {
 
 	f := s.raft.Apply(b, raftTimeout)
 
-	if f.Error() != nil {
-		return nil, f.Error()
+	if e1 := f.Error(); e1 != nil {
+		return nil, e1
 	}
 
-	if c2, ok := f.Response().(FsmCommand); ok {
-		if c2.Error != nil {
-			return nil, c2.Error
-		}
-		return c2.Kv, nil
+	var c2, ok = f.Response().(FsmCommand)
+	if !ok {
+		log.Printf("[Error] %s should got FsmCommand but not. Response: %v", c.Op, f.Response())
+		return nil, errors.New("fsm response type error")
 	}
-	// never reach here
-	return nil, nil
+	if c2.Error != nil {
+		return nil, c2.Error
+	}
+
+	return c2.Kv, nil
 }
 
 func (s *Peer) Delete(bucket, key string) error {
@@ -145,18 +170,16 @@ func (s *Peer) Delete(bucket, key string) error {
 
 	f := s.raft.Apply(b, raftTimeout)
 
-	if f.Error() != nil {
-		return f.Error()
+	if e1 := f.Error(); e1 != nil {
+		return e1
 	}
 
-	if c2, ok := f.Response().(FsmCommand); ok {
-		if c2.Error != nil {
-			return c2.Error
-		}
-		return nil
+	var c2, ok = f.Response().(FsmCommand)
+	if !ok {
+		log.Printf("[Error] %s should got FsmCommand but not. Response: %v", c.Op, f.Response())
+		return errors.New("fsm response type error")
 	}
-	// never reach here
-	return nil
+	return c2.Error
 }
 
 func (s *Peer) PDel(bucket string, keys []string) error {
@@ -175,19 +198,16 @@ func (s *Peer) PDel(bucket string, keys []string) error {
 
 	f := s.raft.Apply(b, raftTimeout)
 
-	if f.Error() != nil {
-		return f.Error()
+	if e1 := f.Error(); e1 != nil {
+		return e1
 	}
 
-	if c2, ok := f.Response().(FsmCommand); ok {
-		if c2.Error != nil {
-			return c2.Error
-		}
-		return nil
+	var c2, ok = f.Response().(FsmCommand)
+	if !ok {
+		log.Printf("[Error] %s should got FsmCommand but not. Response: %v", c.Op, f.Response())
+		return errors.New("fsm response type error")
 	}
-
-	// never reach here
-	return nil
+	return c2.Error
 }
 
 func (s *Peer) Keys(bucket string) (map[string]string, error) {
@@ -201,18 +221,16 @@ func (s *Peer) Keys(bucket string) (map[string]string, error) {
 
 	f := s.raft.Apply(b, raftTimeout)
 
-	if f.Error() != nil {
-		return nil, f.Error()
+	if e1 := f.Error(); e1 != nil {
+		return nil, e1
 	}
 
-	if c2, ok := f.Response().(FsmCommand); ok {
-		if c2.Error != nil {
-			return nil, c2.Error
-		}
-		return c2.Kv, nil
+	var c2, ok = f.Response().(FsmCommand)
+	if !ok {
+		log.Printf("[Error] %s should got FsmCommand but not. Response: %v", c.Op, f.Response())
+		return nil, errors.New("fsm response type error")
 	}
-	// never reach here
-	return nil, nil
+	return c2.Kv, c2.Error
 }
 
 func (s *Peer) KeysWithoutValues(bucket string) (keys []string, err error) {
