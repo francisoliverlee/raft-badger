@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	kvstore "github.com/gmqio/kv-store"
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/raft"
+	errors2 "github.com/pkg/errors"
 	"log"
 	"net"
 	"os"
@@ -24,6 +26,8 @@ type Peer struct {
 	RaftBind string
 
 	raft *raft.Raft // The consensus mechanism
+
+	fsmStore kvstore.KvStore
 }
 
 func NewPeer(dir, bind string) *Peer {
@@ -33,6 +37,7 @@ func NewPeer(dir, bind string) *Peer {
 	}
 }
 
+// MakeSureLeader user set, delete should on leader. no need to read
 func (s *Peer) MakeSureLeader() error {
 	if s.raft.State() == raft.Leader {
 		return nil
@@ -41,13 +46,15 @@ func (s *Peer) MakeSureLeader() error {
 	}
 }
 
+// Set a kv on leader
 func (s *Peer) Set(bucket, k, v string) error {
 	if e := s.MakeSureLeader(); e != nil {
 		return e
 	}
 
 	c := NewFsmCommand(FsmCommandSet)
-	c.Kv[s.buildKey(bucket, k)] = v
+	c.Key = s.buildKey(bucket, k)
+	c.Value = v
 
 	b, err := json.Marshal(c)
 	if err != nil {
@@ -67,101 +74,60 @@ func (s *Peer) Set(bucket, k, v string) error {
 	return c2.Error
 }
 
+// Get a kv on any peer
 func (s *Peer) Get(bucket, k string) (result string, found bool, e error) {
-	c := NewFsmCommand(FsmCommandGet)
-	newKey := s.buildKey(bucket, k)
-	c.Kv[newKey] = ""
+	bb := []byte(bucket)
+	newBB := kvstore.AppendBytes(FsmBucketLength+len(bb), FsmBucket, bb)
 
-	b, err := json.Marshal(c)
-	if err != nil {
-		return "", false, err
-	}
-
-	f := s.raft.Apply(b, raftTimeout)
-
-	if e1 := f.Error(); e1 != nil {
-		return "", false, e1
-	}
-
-	var c2, ok = f.Response().(FsmCommand)
-	if !ok {
-		log.Printf("[Error] %s should got FsmCommand but not. Response: %v", c.Op, f.Response())
-		return "", false, errors.New("fsm response type error")
-	}
-	if c2.Error != nil {
-		return "", false, c2.Error
-	}
-	result, found = c2.Kv[newKey]
-	return result, found, nil
+	val, f, err := s.fsmStore.Get(newBB, []byte(k))
+	return string(val), f, err
 }
 
+// PSet multi kv on leader, Non-atomic operation
 func (s *Peer) PSet(bucket string, kv map[string]string) error {
 	if e := s.MakeSureLeader(); e != nil {
 		return e
 	}
 
-	c := NewFsmCommand(FsmCommandPSet)
 	for k, v := range kv {
-		c.Kv[s.buildKey(bucket, k)] = v
+		if err := s.Set(bucket, k, v); err != nil {
+			return err
+		}
 	}
 
-	b, err := json.Marshal(c)
-	if err != nil {
-		return err
-	}
-
-	f := s.raft.Apply(b, raftTimeout)
-	if e1 := f.Error(); e1 != nil {
-		return e1
-	}
-
-	var c2, ok = f.Response().(FsmCommand)
-	if !ok {
-		log.Printf("[Error] %s should got FsmCommand but not. Response: %v", c.Op, f.Response())
-		return errors.New("fsm response type error")
-	}
-	return c2.Error
+	return nil
 }
 
+// PGet multi keys' values on any peer
 func (s *Peer) PGet(bucket string, keys []string) (map[string]string, error) {
-	newKeys := make([]string, len(keys))
-	for _, key := range keys {
-		newKeys = append(newKeys, s.buildKey(bucket, key))
+	kb := [][]byte{}
+	for _, k := range keys {
+		kb = append(kb, []byte(k))
 	}
 
-	c := NewFsmCommand(FsmCommandPGet)
+	bb := []byte(bucket)
+	newBB := kvstore.AppendBytes(FsmBucketLength+len(bb), FsmBucket, bb)
 
-	b, err := json.Marshal(c)
+	vals, err := s.fsmStore.PGet(newBB, kb)
 	if err != nil {
 		return nil, err
 	}
 
-	f := s.raft.Apply(b, raftTimeout)
-
-	if e1 := f.Error(); e1 != nil {
-		return nil, e1
+	m := make(map[string]string)
+	for i, val := range vals {
+		m[keys[i]] = string(val)
 	}
-
-	var c2, ok = f.Response().(FsmCommand)
-	if !ok {
-		log.Printf("[Error] %s should got FsmCommand but not. Response: %v", c.Op, f.Response())
-		return nil, errors.New("fsm response type error")
-	}
-	if c2.Error != nil {
-		return nil, c2.Error
-	}
-
-	return c2.Kv, nil
+	return m, nil
 }
 
+// Delete a kv on leader
 func (s *Peer) Delete(bucket, key string) error {
 	if e := s.MakeSureLeader(); e != nil {
 		return e
 	}
 
 	c := NewFsmCommand(FsmCommandDel)
-	newKey := s.buildKey(bucket, key)
-	c.Kv[newKey] = ""
+	c.Key = s.buildKey(bucket, key)
 
 	b, err := json.Marshal(c)
 	if err != nil {
@@ -182,62 +148,50 @@ func (s *Peer) Delete(bucket, key string) error {
 	return c2.Error
 }
 
-func (s *Peer) PDel(bucket string, keys []string) error {
-	if e := s.MakeSureLeader(); e != nil {
-		return e
-	}
-
-	c := NewFsmCommand(FsmCommandPDel)
+// PDelete multi kv on leader, Non-atomic operation
+func (s *Peer) PDelete(bucket string, keys []string) error {
 	for _, key := range keys {
-		c.Kv[s.buildKey(bucket, key)] = ""
+		if err := s.Delete(bucket, key); err != nil {
+			return err
+		}
 	}
-	b, err := json.Marshal(c)
-	if err != nil {
-		return err
-	}
-
-	f := s.raft.Apply(b, raftTimeout)
-
-	if e1 := f.Error(); e1 != nil {
-		return e1
-	}
-
-	var c2, ok = f.Response().(FsmCommand)
-	if !ok {
-		log.Printf("[Error] %s should got FsmCommand but not. Response: %v", c.Op, f.Response())
-		return errors.New("fsm response type error")
-	}
-	return c2.Error
+	return nil
 }
 
+// Keys all in bucket
 func (s *Peer) Keys(bucket string) (map[string]string, error) {
-	c := NewFsmCommand(FsmCommandKeys)
-	c.Bucket = bucket
+	bb := []byte(bucket)
+	nbb := kvstore.AppendBytes(FsmBucketLength+len(bb), FsmBucket, bb)
 
-	b, err := json.Marshal(c)
+	keys, vals, err := s.fsmStore.Keys(nbb)
 	if err != nil {
-		return nil, err
+		return nil, errors2.Wrap(err, fmt.Sprintf("failed to %s in bucket: %s", bucket))
 	}
 
-	f := s.raft.Apply(b, raftTimeout)
-
-	if e1 := f.Error(); e1 != nil {
-		return nil, e1
+	if keys == nil || len(keys) == 0 || vals == nil || len(vals) == 0 {
+		log.Printf("empty in bucket " + bucket)
+		return map[string]string{}, nil
 	}
 
-	var c2, ok = f.Response().(FsmCommand)
-	if !ok {
-		log.Printf("[Error] %s should got FsmCommand but not. Response: %v", c.Op, f.Response())
-		return nil, errors.New("fsm response type error")
+	if len(keys) != len(vals) {
+		str := fmt.Sprintf("[Error] length of keys[%d] and values[%d] not the same in bucket %s", len(keys), len(vals), bucket)
+		return map[string]string{}, errors.New(str)
 	}
-	return c2.Kv, c2.Error
+
+	m := map[string]string{}
+	for i, key := range keys {
+		m[string(key)] = string(vals[i])
+	}
+	return m, nil
 }
 
+// KeysWithoutValues in bucket
 func (s *Peer) KeysWithoutValues(bucket string) (keys []string, err error) {
 	m, e := s.Keys(bucket)
 	return MKeys(m), e
 }
 
+// Close peer
 func (s *Peer) Close() error {
 	return s.raft.Shutdown().Error()
 }
@@ -278,6 +232,9 @@ func (s *Peer) Open(enableSingle bool, localID string) error {
 		return fmt.Errorf("new raft: %s", err)
 	}
 	s.raft = ra
+
+	// Local fsm store
+	s.fsmStore = badgerStore.db
 
 	if enableSingle {
 		configuration := raft.Configuration{
@@ -335,5 +292,8 @@ func (s *Peer) Stats() map[string]string {
 }
 
 func (s *Peer) buildKey(bucket, key string) string {
+	if len(bucket) == 0 {
+		return key
+	}
 	return bucket + BucketSpliter + key
 }

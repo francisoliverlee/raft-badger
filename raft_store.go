@@ -13,17 +13,8 @@ import (
 )
 
 const (
-	FsmCommandGet  = "Get"
-	FsmCommandPGet = "PGet"
-
-	FsmCommandSet  = "Set"
-	FsmCommandPSet = "PSet"
-
-	FsmCommandDel  = "Delete"
-	FsmCommandPDel = "PDelete"
-
-	FsmCommandKeys    = "Keys"    // keys or values in a bucket
-	FsmCommandKeysAll = "KeysAll" // all keys
+	FsmCommandSet = "Set"
+	FsmCommandDel = "Delete"
 )
 
 var (
@@ -42,18 +33,9 @@ var (
 	firstIndexKey = []byte("_first_k")
 	lastIndexKey  = []byte("_last_k")
 
-	cmd = map[string]interface{}{
-		FsmCommandGet:  nil,
-		FsmCommandPGet: nil,
-
-		FsmCommandSet:  nil,
-		FsmCommandPSet: nil,
-
-		FsmCommandDel:  nil,
-		FsmCommandPDel: nil,
-
-		FsmCommandKeys:    nil,
-		FsmCommandKeysAll: nil,
+	FsmCmd = map[string]interface{}{
+		FsmCommandSet: nil,
+		FsmCommandDel: nil,
 	}
 )
 
@@ -70,14 +52,14 @@ type FsmCommand struct {
 	Op    string `json:"op,omitempty"`
 	Error error  `json:"-"` // only output, not input param,
 
-	Bucket string            `json:"bucket,omitempty"` // check where to be used
-	Kv     map[string]string `json:"kv_map,omitempty"`
+	Bucket string `json:"bucket,omitempty"` // check where to be used
+	Key    string `json:"key,omitempty"`
+	Value  string `json:"value,omitempty"`
 }
 
 func NewFsmCommand(op string) FsmCommand {
 	return FsmCommand{
 		Op: op,
-		Kv: map[string]string{},
 	}
 }
 
@@ -104,7 +86,7 @@ func NewBadgerStore(path string, readOnly bool) (*RaftStore, error) {
 }
 
 func (c FsmCommand) ok() bool {
-	_, ok := cmd[c.Op]
+	_, ok := FsmCmd[c.Op]
 	return ok
 }
 
@@ -274,120 +256,28 @@ func (b *RaftStore) Apply(l *raft.Log) interface{} {
 		c.Error = errors2.Wrap(err, fmt.Sprintf("failed to apply. unmarshal log error, index: %d", l.Index))
 		return c
 	}
-	if c.Kv == nil || len(c.Kv) == 0 {
-		c.Error = errors.New(fmt.Sprintf("failed to apply. empty kv, index=%d", l.Index))
+	if len(c.Key) == 0 {
+		c.Error = errors.New(fmt.Sprintf("failed to apply. key nil,op=%s, index=%d", c.Op, l.Index))
 		return c
 	}
 	if !c.ok() {
-		c.Error = errors.New(fmt.Sprintf("failed to apply, cmd op error,op=%s, index=%d", c.Op, l.Index))
+		c.Error = errors.New(fmt.Sprintf("failed to apply, FsmCmd op error,op=%s, index=%d", c.Op, l.Index))
 		return c
 	}
 
-	// prepare params
-	multiKeys := false
-	var newKeys [][]byte
-	var newValues [][]byte
-	for k, v := range c.Kv {
-		keyB := []byte(k)
-		newKey := kvstore.AppendBytes(FsmBucketLength+len(keyB), FsmBucket, keyB)
+	keyB := []byte(c.Key)
+	newKey := kvstore.AppendBytes(FsmBucketLength+len(keyB), FsmBucket, keyB)
 
-		switch c.Op {
-		case FsmCommandSet:
-			if err := b.db.Set(FsmBucket, newKey, []byte(v)); err != nil {
-				c.Error = errors2.Wrap(err, fmt.Sprintf("failed to apply %s, newKey: %s", c.Op, string(newKey)))
-			}
-		case FsmCommandDel:
-			if err := b.db.Delete(FsmBucket, newKey); err != nil {
-				c.Error = errors2.Wrap(err, fmt.Sprintf("failed to apply %s, newKey: %s", c.Op, string(newKey)))
-			}
-		case FsmCommandGet:
-			if val, _, err := b.db.Get(FsmBucket, newKey); err != nil {
-				c.Error = errors2.Wrap(err, fmt.Sprintf("failed to apply %s, newKey: %s", c.Op, string(newKey)))
-			} else {
-				c.Kv[k] = string(val)
-			}
-		case FsmCommandPSet:
-			if newKeys == nil {
-				newKeys = make([][]byte, 0)
-			}
-			if newValues == nil {
-				newValues = make([][]byte, 0)
-			}
-			newKeys = append(newKeys, newKey)
-			newValues = append(newValues, []byte(v))
-			multiKeys = true
-			continue
-		case FsmCommandPDel:
-		case FsmCommandPGet:
-			if newKeys == nil {
-				newKeys = make([][]byte, 0)
-			}
-			newKeys = append(newKeys, newKey)
-			multiKeys = true
-			continue
-		}
-		break
-	}
-
-	// return , if error happened when single key or multi key
-	if c.Error != nil {
-		return c
-	}
-
-	// multi keys
-	if multiKeys {
-		switch c.Op {
-		case FsmCommandPSet:
-			if err := b.db.PSet(FsmBucket, newKeys, newValues); err != nil {
-				c.Error = errors2.Wrap(err, fmt.Sprintf("failed to apply "+c.Op))
-			}
-		case FsmCommandPGet:
-			if vals, err := b.db.PGet(FsmBucket, newKeys); err != nil {
-				c.Error = errors2.Wrap(err, fmt.Sprintf("failed to apply "+c.Op))
-			} else {
-				if len(newKeys) != len(vals) {
-					c.Error = errors2.Wrap(err, fmt.Sprintf("failed to apply "+c.Op))
-				} else {
-					for i, key := range newKeys {
-						c.Kv[string(key)] = string(vals[i])
-					}
-				}
-			}
-		case FsmCommandPDel:
-			if err := b.db.DeleteKeys(FsmBucket, newKeys); err != nil {
-				c.Error = errors2.Wrap(err, fmt.Sprintf("failed to apply "+c.Op))
-			}
-		}
-		return c
-	}
-
-	// unknown keys in bucket
 	switch c.Op {
-	case FsmCommandKeys:
-		bb := []byte(c.Bucket)
-		nbb := kvstore.AppendBytes(FsmBucketLength+len(bb), FsmBucket, bb)
-		if keys, vals, err := b.db.Keys(nbb); err != nil {
-			c.Error = errors2.Wrap(err, fmt.Sprintf("failed to apply %s, new bucket: %s", c.Op, string(nbb)))
-			return c
-		} else {
-			newKeys = keys
-			newValues = vals
+	case FsmCommandSet:
+		if err := b.db.Set(FsmBucket, newKey, []byte(c.Value)); err != nil {
+			c.Error = errors2.Wrap(err, fmt.Sprintf("failed to apply %s, newKey: %s", c.Op, string(newKey)))
 		}
-
-		if newKeys == nil || len(newKeys) == 0 || newValues == nil || len(newValues) == 0 {
-			log.Printf("empty in bucket " + c.Bucket)
-			return c
-		}
-
-		if len(newKeys) != len(newValues) {
-			log.Fatalf("[BUG] length of keys[%d] and values[%d] not the same in bucket %s", len(newKeys), len(newValues), c.Bucket)
-			return c
-		}
-		for i, key := range newKeys {
-			c.Kv[string(key)] = string(newValues[i])
+	case FsmCommandDel:
+		if err := b.db.Delete(FsmBucket, newKey); err != nil {
+			c.Error = errors2.Wrap(err, fmt.Sprintf("failed to apply %s, newKey: %s", c.Op, string(newKey)))
 		}
 	}
-
 	return c
 }
 
