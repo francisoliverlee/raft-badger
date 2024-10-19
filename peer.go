@@ -14,6 +14,7 @@ import (
 )
 
 const (
+	BucketSpliter       = "@"
 	retainSnapshotCount = 2
 	raftTimeout         = 10 * time.Second
 )
@@ -23,16 +24,208 @@ type Peer struct {
 	RaftBind string
 
 	raft *raft.Raft // The consensus mechanism
-
-	logger *log.Logger
 }
 
 func NewPeer() *Peer {
-	return &Peer{
-		logger: log.New(os.Stderr, "[Peer] ", log.LstdFlags),
+	return &Peer{}
+}
+
+func (s *Peer) MakeSureLeader() error {
+	if s.raft.State() == raft.Leader {
+		return nil
+	} else {
+		return errors.New("not leader")
 	}
 }
 
+func (s *Peer) Set(bucket, k, v string) error {
+	if e := s.MakeSureLeader(); e != nil {
+		return e
+	}
+
+	c := NewFsmCommand(FsmCommandSet)
+	c.Kv[s.buildKey(bucket, k)] = v
+
+	b, err := json.Marshal(c)
+	if err != nil {
+		return err
+	}
+
+	f := s.raft.Apply(b, raftTimeout)
+	return f.Error()
+}
+
+func (s *Peer) Get(bucket, k string) (result string, found bool, e error) {
+	if e := s.MakeSureLeader(); e != nil {
+		return "", false, e
+	}
+
+	c := NewFsmCommand(FsmCommandGet)
+	newKey := s.buildKey(bucket, k)
+	c.Kv[newKey] = ""
+
+	b, err := json.Marshal(c)
+	if err != nil {
+		return "", false, err
+	}
+
+	f := s.raft.Apply(b, raftTimeout)
+	if c2, ok := f.Response().(FsmCommand); ok {
+		if c2.Error != nil {
+			return "", false, c2.Error
+		}
+		result, found := c2.Kv[newKey]
+		return result, found, nil
+	} else {
+		log.Fatalf("[BUG PGet] should got FsmCommand, but not.Response: %v", f.Response())
+		return "", false, errors.New("invalid response")
+	}
+}
+
+func (s *Peer) PSet(bucket string, kv map[string]string) error {
+	if e := s.MakeSureLeader(); e != nil {
+		return e
+	}
+
+	c := NewFsmCommand(FsmCommandPSet)
+	for k, v := range kv {
+		c.Kv[s.buildKey(bucket, k)] = v
+	}
+
+	b, err := json.Marshal(c)
+	if err != nil {
+		return err
+	}
+
+	f := s.raft.Apply(b, raftTimeout)
+	return f.Error()
+}
+
+func (s *Peer) PGet(bucket string, keys []string) (map[string]string, error) {
+	newKeys := make([]string, len(keys))
+	for _, key := range keys {
+		newKeys = append(newKeys, s.buildKey(bucket, key))
+	}
+
+	c := NewFsmCommand(FsmCommandPGet)
+
+	b, err := json.Marshal(c)
+	if err != nil {
+		return nil, err
+	}
+
+	f := s.raft.Apply(b, raftTimeout)
+
+	if f.Error() != nil {
+		return nil, f.Error()
+	}
+
+	if c2, ok := f.Response().(FsmCommand); ok {
+		if c2.Error != nil {
+			return nil, c2.Error
+		}
+		return c2.Kv, nil
+	}
+	// never reach here
+	return nil, nil
+}
+
+func (s *Peer) Delete(bucket, key string) error {
+	if e := s.MakeSureLeader(); e != nil {
+		return e
+	}
+
+	c := NewFsmCommand(FsmCommandDel)
+	newKey := s.buildKey(bucket, key)
+	c.Kv[newKey] = ""
+
+	b, err := json.Marshal(c)
+	if err != nil {
+		return err
+	}
+
+	f := s.raft.Apply(b, raftTimeout)
+
+	if f.Error() != nil {
+		return f.Error()
+	}
+
+	if c2, ok := f.Response().(FsmCommand); ok {
+		if c2.Error != nil {
+			return c2.Error
+		}
+		return nil
+	}
+	// never reach here
+	return nil
+}
+
+func (s *Peer) PDel(bucket string, keys []string) error {
+	if e := s.MakeSureLeader(); e != nil {
+		return e
+	}
+
+	c := NewFsmCommand(FsmCommandPDel)
+	for _, key := range keys {
+		c.Kv[s.buildKey(bucket, key)] = ""
+	}
+	b, err := json.Marshal(c)
+	if err != nil {
+		return err
+	}
+
+	f := s.raft.Apply(b, raftTimeout)
+
+	if f.Error() != nil {
+		return f.Error()
+	}
+
+	if c2, ok := f.Response().(FsmCommand); ok {
+		if c2.Error != nil {
+			return c2.Error
+		}
+		return nil
+	}
+
+	// never reach here
+	return nil
+}
+
+func (s *Peer) Keys(bucket string) (map[string]string, error) {
+	c := NewFsmCommand(FsmCommandKeys)
+	c.Bucket = bucket
+
+	b, err := json.Marshal(c)
+	if err != nil {
+		return nil, err
+	}
+
+	f := s.raft.Apply(b, raftTimeout)
+
+	if f.Error() != nil {
+		return nil, f.Error()
+	}
+
+	if c2, ok := f.Response().(FsmCommand); ok {
+		if c2.Error != nil {
+			return nil, c2.Error
+		}
+		return c2.Kv, nil
+	}
+	// never reach here
+	return nil, nil
+}
+
+func (s *Peer) KeysWithoutValues(bucket string) (keys []string, err error) {
+	m, e := s.Keys(bucket)
+	return MKeys(m), e
+}
+
+func (s *Peer) Close() error {
+	return s.raft.Shutdown().Error()
+}
+
+// Open a peer, ready to do join or joined by other peers
 func (s *Peer) Open(enableSingle bool, localID string) error {
 	config := raft.DefaultConfig()
 	config.LocalID = raft.ServerID(localID)
@@ -84,12 +277,13 @@ func (s *Peer) Open(enableSingle bool, localID string) error {
 	return nil
 }
 
+// Join a raft cluster
 func (s *Peer) Join(nodeID, addr string) error {
-	s.logger.Printf("received join request for remote node %s at %s", nodeID, addr)
+	log.Printf("received join request for remote node %s at %s", nodeID, addr)
 
 	configFuture := s.raft.GetConfiguration()
 	if err := configFuture.Error(); err != nil {
-		s.logger.Printf("failed to get raft configuration: %v", err)
+		log.Printf("failed to get raft configuration: %v", err)
 		return err
 	}
 
@@ -100,7 +294,7 @@ func (s *Peer) Join(nodeID, addr string) error {
 			// However if *both* the ID and the address are the same, then nothing -- not even
 			// a join operation -- is needed.
 			if srv.Address == raft.ServerAddress(addr) && srv.ID == raft.ServerID(nodeID) {
-				s.logger.Printf("node %s at %s already member of cluster, ignoring join request", nodeID, addr)
+				log.Printf("node %s at %s already member of cluster, ignoring join request", nodeID, addr)
 				return nil
 			}
 
@@ -115,75 +309,14 @@ func (s *Peer) Join(nodeID, addr string) error {
 	if f.Error() != nil {
 		return f.Error()
 	}
-	s.logger.Printf("node %s at %s joined successfully", nodeID, addr)
+	log.Printf("node %s at %s joined successfully", nodeID, addr)
 	return nil
-}
-
-func (s *Peer) Get(key string) (string, error) {
-	c := &FsmCommand{
-		Op:  FsmCommandGet,
-		Key: key,
-	}
-
-	b, err := json.Marshal(c)
-	if err != nil {
-		return "", err
-	}
-
-	f := s.raft.Apply(b, raftTimeout)
-
-	if f.Error() != nil {
-		return "", f.Error()
-	}
-
-	if c2, ok := f.Response().(FsmCommand); ok {
-		if c2.Error != nil {
-			return "", c2.Error
-		}
-		return c2.Value, nil
-	} else {
-		log.Fatalf("[BUG] should got FsmCommand, but not.Response: %v", f.Response())
-		return "", errors.New("invalid response")
-	}
-}
-
-func (s *Peer) Set(key, value string) error {
-	if s.raft.State() != raft.Leader {
-		return fmt.Errorf("not leader")
-	}
-
-	c := &FsmCommand{
-		Op:    FsmCommandSet,
-		Key:   key,
-		Value: value,
-	}
-	b, err := json.Marshal(c)
-	if err != nil {
-		return err
-	}
-
-	f := s.raft.Apply(b, raftTimeout)
-	return f.Error()
-}
-
-func (s *Peer) Delete(key string) error {
-	if s.raft.State() != raft.Leader {
-		return fmt.Errorf("not leader")
-	}
-
-	c := &FsmCommand{
-		Op:  FsmCommandDelete,
-		Key: key,
-	}
-	b, err := json.Marshal(c)
-	if err != nil {
-		return err
-	}
-
-	f := s.raft.Apply(b, raftTimeout)
-	return f.Error()
 }
 
 func (s *Peer) Stats() map[string]string {
 	return s.raft.Stats()
+}
+
+func (s *Peer) buildKey(bucket, key string) string {
+	return bucket + BucketSpliter + key
 }

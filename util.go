@@ -1,28 +1,12 @@
 package raft_badger
 
 import (
-	"bytes"
 	"encoding/binary"
 	"encoding/json"
 	"github.com/hashicorp/raft"
 	"log"
 	"strings"
 )
-
-func encodeKey(prefix, userKey []byte) []byte {
-	buf := bytes.NewBuffer(make([]byte, len(prefix)+len(userKey)))
-	_ = binary.Write(buf, binary.BigEndian, prefix)
-	_ = binary.Write(buf, binary.BigEndian, userKey)
-	return buf.Bytes()
-}
-
-func encodeRaftLogKey(idx uint64) []byte {
-	buf := bytes.NewBuffer(make([]byte, len(LogBucket)+8))
-	_ = binary.Write(buf, binary.BigEndian, LogBucket)
-	_ = binary.Write(buf, binary.BigEndian, idx)
-
-	return buf.Bytes()
-}
 
 func encodeRaftLog(l *raft.Log) ([]byte, error) {
 	return json.Marshal(*l)
@@ -75,4 +59,15 @@ func PrintMapDiff(baseKv, newKv map[string]string) {
 
 	log.Printf("newKv - baseKv: diff keys %s", strings.Join(diff1, ","))
 	log.Printf("baseKv - newKv: diff keys %s", strings.Join(diff2, ","))
+}
+
+func MKeys(m map[string]string) []string {
+	if m == nil || len(m) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(m))
+	for k, _ := range m {
+		keys = append(keys, k)
+	}
+	return keys
 }

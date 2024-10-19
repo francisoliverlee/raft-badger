@@ -13,9 +13,17 @@ import (
 )
 
 const (
-	FsmCommandGet    = "get"
-	FsmCommandSet    = "set"
-	FsmCommandDelete = "del"
+	FsmCommandGet  = "Get"
+	FsmCommandPGet = "PGet"
+
+	FsmCommandSet  = "Set"
+	FsmCommandPSet = "PSet"
+
+	FsmCommandDel  = "Delete"
+	FsmCommandPDel = "PDelete"
+
+	FsmCommandKeys    = "Keys"    // keys or values in a bucket
+	FsmCommandKeysAll = "KeysAll" // all keys
 )
 
 var (
@@ -33,6 +41,20 @@ var (
 
 	firstIndexKey = []byte("_first_k")
 	lastIndexKey  = []byte("_last_k")
+
+	cmd = map[string]interface{}{
+		FsmCommandGet:  nil,
+		FsmCommandPGet: nil,
+
+		FsmCommandSet:  nil,
+		FsmCommandPSet: nil,
+
+		FsmCommandDel:  nil,
+		FsmCommandPDel: nil,
+
+		FsmCommandKeys:    nil,
+		FsmCommandKeysAll: nil,
+	}
 )
 
 type RaftStore struct {
@@ -46,10 +68,17 @@ type Stats struct {
 
 type FsmCommand struct {
 	Op    string `json:"op,omitempty"`
-	Key   string `json:"key,omitempty"`
-	Value string `json:"value,omitempty"`
+	Error error  `json:"-"` // only output, not input param,
 
-	Error error `json:"-"` // response
+	Bucket string            `json:"bucket,omitempty"` // check where to be used
+	Kv     map[string]string `json:"kv_map,omitempty"`
+}
+
+func NewFsmCommand(op string) *FsmCommand {
+	return &FsmCommand{
+		Op: op,
+		Kv: map[string]string{},
+	}
 }
 
 type fsmSnapshot struct {
@@ -74,12 +103,17 @@ func NewBadgerStore(path string, readOnly bool) (*RaftStore, error) {
 	return store, nil
 }
 
-func (o *RaftStore) ReadOnly() bool {
-	return o.db.ReadOnly()
+func (c FsmCommand) ok() bool {
+	_, ok := cmd[c.Op]
+	return ok
 }
 
-func (o *RaftStore) Path() string {
-	return o.path
+func (b *RaftStore) ReadOnly() bool {
+	return b.db.ReadOnly()
+}
+
+func (b *RaftStore) Path() string {
+	return b.path
 }
 
 func (b *RaftStore) setFirstIndex(tx *badger.Txn, first uint64) error {
@@ -228,48 +262,149 @@ func (b *RaftStore) GetFromBadger(k []byte) (val []byte, err error) {
 	return v, err
 }
 
-func (f *RaftStore) GetAppliedValue(k string) ([]byte, error) {
-	key := encodeKey(FsmBucket, []byte(k))
-	return f.GetFromBadger(key)
+func (b *RaftStore) GetAppliedValue(k string) ([]byte, error) {
+	keyB := []byte(k)
+	newKey := kvstore.AppendBytes(FsmBucketLength+len(keyB), FsmBucket, keyB)
+	return b.GetFromBadger(newKey)
 }
 
-func (f *RaftStore) Apply(l *raft.Log) interface{} {
+func (b *RaftStore) Apply(l *raft.Log) interface{} {
 	var c FsmCommand
 	if err := json.Unmarshal(l.Data, &c); err != nil {
-		c.Error = errors2.Wrap(err, fmt.Sprintf("failed to do apply unmarshal, key: %s", c.Key))
+		c.Error = errors2.Wrap(err, fmt.Sprintf("failed to apply. unmarshal log error, index: %d", l.Index))
+		return c
+	}
+	if c.Kv == nil || len(c.Kv) == 0 {
+		c.Error = errors.New(fmt.Sprintf("failed to apply. empty kv, index=%d", l.Index))
+		return c
+	}
+	if !c.ok() {
+		c.Error = errors.New(fmt.Sprintf("failed to apply, cmd op error,op=%s, index=%d", c.Op, l.Index))
 		return c
 	}
 
-	key := encodeKey(FsmBucket, []byte(c.Key))
+	// prepare params
+	multiKeys := false
+	var newKeys [][]byte
+	var newValues [][]byte
+	for k, v := range c.Kv {
+		keyB := []byte(k)
+		newKey := kvstore.AppendBytes(FsmBucketLength+len(keyB), FsmBucket, keyB)
 
+		switch c.Op {
+		case FsmCommandSet:
+			if err := b.db.Set(FsmBucket, newKey, []byte(v)); err != nil {
+				c.Error = errors2.Wrap(err, fmt.Sprintf("failed to apply %s, newKey: %s", c.Op, string(newKey)))
+			}
+		case FsmCommandDel:
+			if err := b.db.Delete(FsmBucket, newKey); err != nil {
+				c.Error = errors2.Wrap(err, fmt.Sprintf("failed to apply %s, newKey: %s", c.Op, string(newKey)))
+			}
+		case FsmCommandGet:
+			if val, _, err := b.db.Get(FsmBucket, newKey); err != nil {
+				c.Error = errors2.Wrap(err, fmt.Sprintf("failed to apply %s, newKey: %s", c.Op, string(newKey)))
+			} else {
+				c.Kv[k] = string(val)
+			}
+		case FsmCommandPSet:
+			if newKeys == nil {
+				newKeys = make([][]byte, 0)
+			}
+			if newValues == nil {
+				newValues = make([][]byte, 0)
+			}
+			newKeys = append(newKeys, newKey)
+			newValues = append(newValues, []byte(v))
+			multiKeys = true
+			continue
+		case FsmCommandPDel:
+		case FsmCommandPGet:
+			if newKeys == nil {
+				newKeys = make([][]byte, 0)
+			}
+			newKeys = append(newKeys, newKey)
+			multiKeys = true
+			continue
+		}
+		break
+	}
+
+	// return , if error happened when single key or multi key
+	if c.Error != nil {
+		return c
+	}
+
+	// multi keys
+	if multiKeys {
+		switch c.Op {
+		case FsmCommandPSet:
+			if err := b.db.PSet(FsmBucket, newKeys, newValues); err != nil {
+				c.Error = errors2.Wrap(err, fmt.Sprintf("failed to apply "+c.Op))
+			}
+		case FsmCommandPGet:
+			if vals, err := b.db.PGet(FsmBucket, newKeys); err != nil {
+				c.Error = errors2.Wrap(err, fmt.Sprintf("failed to apply "+c.Op))
+			} else {
+				if len(newKeys) != len(vals) {
+					c.Error = errors2.Wrap(err, fmt.Sprintf("failed to apply "+c.Op))
+				} else {
+					for i, key := range newKeys {
+						c.Kv[string(key)] = string(vals[i])
+					}
+				}
+			}
+		case FsmCommandPDel:
+			if err := b.db.DeleteKeys(FsmBucket, newKeys); err != nil {
+				c.Error = errors2.Wrap(err, fmt.Sprintf("failed to apply "+c.Op))
+			}
+		}
+		return c
+	}
+
+	// unknown keys in bucket
 	switch c.Op {
-	case FsmCommandSet:
-		if err := f.db.Set(FsmBucket, key, []byte(c.Value)); err != nil {
-			c.Error = errors2.Wrap(err, fmt.Sprintf("failed to apply set key: %s", string(key)))
-		}
-	case FsmCommandDelete:
-		if err := f.db.Delete(FsmBucket, key); err != nil {
-			c.Error = errors2.Wrap(err, fmt.Sprintf("failed to apply delete key: %s", string(key)))
-		}
-	case FsmCommandGet:
-		if val, _, err := f.db.Get(FsmBucket, key); err != nil {
-			c.Error = errors2.Wrap(err, fmt.Sprintf("failed to apply get %s %v", string(key), err))
+	case FsmCommandKeys:
+		bb := []byte(c.Bucket)
+		nbb := kvstore.AppendBytes(FsmBucketLength+len(bb), FsmBucket, bb)
+		if keys, vals, err := b.db.Keys(nbb); err != nil {
+			c.Error = errors2.Wrap(err, fmt.Sprintf("failed to apply %s, new bucket: %s", c.Op, string(nbb)))
+			return c
 		} else {
-			c.Value = string(val)
+			newKeys = keys
+			newValues = vals
 		}
-	default:
-		c.Error = errors.New(fmt.Sprintf("unknown command: %s. key: %s ", c.Op, c.Key))
+
+		if newKeys == nil || len(newKeys) == 0 || newValues == nil || len(newValues) == 0 {
+			log.Printf("empty in bucket " + c.Bucket)
+			return c
+		}
+
+		if len(newKeys) != len(newValues) {
+			log.Fatalf("[BUG] length of keys[%d] and values[%d] not the same in bucket %s", len(newKeys), len(newValues), c.Bucket)
+			return c
+		}
+		for i, key := range newKeys {
+			c.Kv[string(key)] = string(newValues[i])
+		}
 	}
 
 	return c
 }
 
+func (b *RaftStore) ApplyBatch(logs []*raft.Log) []interface{} {
+	var res []interface{}
+	for _, l := range logs {
+		res = append(res, b.Apply(l))
+	}
+	return res
+}
+
 // Snapshot The Snapshot implementation should return quickly, because Apply can not
 // be called while Snapshot is running
-func (f *RaftStore) Snapshot() (raft.FSMSnapshot, error) {
+func (b *RaftStore) Snapshot() (raft.FSMSnapshot, error) {
 	kvMap := map[string]string{}
 
-	if keys, vals, err := f.db.KeyStrings(FsmBucket); err != nil {
+	if keys, vals, err := b.db.KeyStrings(FsmBucket); err != nil {
 		return &fsmSnapshot{store: kvMap}, err
 	} else {
 		for i, k := range keys {
@@ -280,13 +415,13 @@ func (f *RaftStore) Snapshot() (raft.FSMSnapshot, error) {
 	return &fsmSnapshot{store: kvMap}, nil
 }
 
-func (f *RaftStore) Restore(rc io.ReadCloser) error {
+func (b *RaftStore) Restore(rc io.ReadCloser) error {
 	newKv := make(map[string]string)
 	if err := json.NewDecoder(rc).Decode(&newKv); err != nil {
 		return err
 	}
 
-	s, sEr := f.Snapshot()
+	s, sEr := b.Snapshot()
 	if sEr != nil {
 		log.Printf("Restore warn, get snapshot error. %s.  would replace all kv", sEr)
 	}
@@ -294,7 +429,7 @@ func (f *RaftStore) Restore(rc io.ReadCloser) error {
 	PrintMapDiff(fsmS.store, newKv)
 
 	// NOTICE : big newKv would spend lots of time
-	return f.db.Exec(func(txn *badger.Txn) error {
+	return b.db.Exec(func(txn *badger.Txn) error {
 		for k, v := range newKv {
 			kb := []byte(k)
 			key := kvstore.AppendBytes(len(FsmBucket)+len(kb), FsmBucket, kb)
@@ -304,6 +439,10 @@ func (f *RaftStore) Restore(rc io.ReadCloser) error {
 		}
 		return nil
 	})
+}
+
+func (b *RaftStore) toLogString(l *raft.Log) string {
+	return fmt.Sprintf("idx=%d,type=%s, appended_at=%s, data=%s,term=%d, ext=%s", l.Index, l.Type.String(), l.AppendedAt.String(), string(l.Data), l.Term, string(l.Extensions))
 }
 
 func (f *fsmSnapshot) Persist(sink raft.SnapshotSink) error {
