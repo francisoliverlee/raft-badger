@@ -165,7 +165,7 @@ func (s *Peer) Keys(bucket string) (map[string]string, error) {
 
 	keys, vals, err := s.fsmStore.Keys(nbb)
 	if err != nil {
-		return nil, errors2.Wrap(err, fmt.Sprintf("failed to %s in bucket: %s", bucket))
+		return nil, errors2.Wrap(err, fmt.Sprintf("failed to keys in bucket: %s", bucket))
 	}
 
 	if keys == nil || len(keys) == 0 || vals == nil || len(vals) == 0 {
