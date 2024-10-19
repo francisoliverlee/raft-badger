@@ -269,7 +269,7 @@ func (b *RaftStore) GetAppliedValue(k string) ([]byte, error) {
 }
 
 func (b *RaftStore) Apply(l *raft.Log) interface{} {
-	var c FsmCommand
+	var c = FsmCommand{}
 	if err := json.Unmarshal(l.Data, &c); err != nil {
 		c.Error = errors2.Wrap(err, fmt.Sprintf("failed to apply. unmarshal log error, index: %d", l.Index))
 		return c

@@ -59,10 +59,6 @@ func (s *Peer) Set(bucket, k, v string) error {
 }
 
 func (s *Peer) Get(bucket, k string) (result string, found bool, e error) {
-	if e := s.MakeSureLeader(); e != nil {
-		return "", false, e
-	}
-
 	c := NewFsmCommand(FsmCommandGet)
 	newKey := s.buildKey(bucket, k)
 	c.Kv[newKey] = ""
@@ -80,7 +76,7 @@ func (s *Peer) Get(bucket, k string) (result string, found bool, e error) {
 		result, found := c2.Kv[newKey]
 		return result, found, nil
 	} else {
-		log.Fatalf("[BUG PGet] should got FsmCommand, but not.Response: %v", f.Response())
+		log.Fatalf("[BUG %s] should got FsmCommand, but not.Response: %v", FsmCommandGet, f.Response())
 		return "", false, errors.New("invalid response")
 	}
 }
