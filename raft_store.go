@@ -103,7 +103,7 @@ func (b *RaftStore) setFirstIndex(tx *badger.Txn, first uint64) error {
 }
 
 func (b *RaftStore) getFirstIndex() (uint64, error) {
-	val, err := b.GetFromBadger(firstIndexKey)
+	val, err := b.R(firstIndexKey)
 	if err == nil {
 		return bytesToUint64(val), nil
 	} else {
@@ -119,7 +119,7 @@ func (b *RaftStore) setLastIndex(tx *badger.Txn, last uint64) error {
 }
 
 func (b *RaftStore) getLastIndex() (uint64, error) {
-	val, err := b.GetFromBadger(lastIndexKey)
+	val, err := b.R(lastIndexKey)
 	if err == nil {
 		return bytesToUint64(val), nil
 	} else {
@@ -236,18 +236,12 @@ func (b *RaftStore) DeleteRange(minIdx, maxIdx uint64) error {
 	})
 }
 
-func (b *RaftStore) GetFromBadger(k []byte) (val []byte, err error) {
+func (b *RaftStore) R(k []byte) (val []byte, err error) { // R for real
 	v, _, err := b.db.Get(EmptyBucket, k)
 	if err != nil {
 		return nil, err
 	}
 	return v, err
-}
-
-func (b *RaftStore) GetAppliedValue(k string) ([]byte, error) {
-	keyB := []byte(k)
-	newKey := kvstore.AppendBytes(FsmBucketLength+len(keyB), FsmBucket, keyB)
-	return b.GetFromBadger(newKey)
 }
 
 func (b *RaftStore) Apply(l *raft.Log) interface{} {
@@ -266,16 +260,15 @@ func (b *RaftStore) Apply(l *raft.Log) interface{} {
 	}
 
 	keyB := []byte(c.Key)
-	newKey := kvstore.AppendBytes(FsmBucketLength+len(keyB), FsmBucket, keyB)
 
 	switch c.Op {
 	case FsmCommandSet:
-		if err := b.db.Set(FsmBucket, newKey, []byte(c.Value)); err != nil {
-			c.Error = errors2.Wrap(err, fmt.Sprintf("failed to apply %s, newKey: %s", c.Op, string(newKey)))
+		if err := b.db.Set(FsmBucket, keyB, []byte(c.Value)); err != nil {
+			c.Error = errors2.Wrap(err, fmt.Sprintf("failed to apply %s, bucket: %s, key=%s", c.Op, c.Bucket, c.Key))
 		}
 	case FsmCommandDel:
-		if err := b.db.Delete(FsmBucket, newKey); err != nil {
-			c.Error = errors2.Wrap(err, fmt.Sprintf("failed to apply %s, newKey: %s", c.Op, string(newKey)))
+		if err := b.db.Delete(FsmBucket, keyB); err != nil {
+			c.Error = errors2.Wrap(err, fmt.Sprintf("failed to apply %s, bucket: %s, key=%s", c.Op, c.Bucket, c.Key))
 		}
 	}
 	return c
