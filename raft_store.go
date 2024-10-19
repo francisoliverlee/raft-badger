@@ -74,8 +74,8 @@ type FsmCommand struct {
 	Kv     map[string]string `json:"kv_map,omitempty"`
 }
 
-func NewFsmCommand(op string) *FsmCommand {
-	return &FsmCommand{
+func NewFsmCommand(op string) FsmCommand {
+	return FsmCommand{
 		Op: op,
 		Kv: map[string]string{},
 	}
@@ -269,7 +269,7 @@ func (b *RaftStore) GetAppliedValue(k string) ([]byte, error) {
 }
 
 func (b *RaftStore) Apply(l *raft.Log) interface{} {
-	var c = FsmCommand{}
+	var c = NewFsmCommand("")
 	if err := json.Unmarshal(l.Data, &c); err != nil {
 		c.Error = errors2.Wrap(err, fmt.Sprintf("failed to apply. unmarshal log error, index: %d", l.Index))
 		return c
