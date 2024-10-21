@@ -4,7 +4,7 @@ go 1.21
 
 require (
 	github.com/dgraph-io/badger/v4 v4.3.1
-	github.com/gmqio/kv-store v0.0.0-20241021134218-96747029a3e1
+	github.com/gmqio/kv-store v0.0.0-20241021153227-cc18483c066f
 	github.com/hashicorp/go-hclog v1.6.2
 	github.com/hashicorp/raft v1.7.1
 	github.com/pkg/errors v0.9.1
