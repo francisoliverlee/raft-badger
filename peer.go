@@ -19,6 +19,9 @@ const (
 	BucketSpliter       = "@"
 	retainSnapshotCount = 2
 	raftTimeout         = 10 * time.Second
+
+	logStoreDir      = "raft.log"
+	snapshotStoreDir = "raft.snapshot"
 )
 
 type Peer struct {
@@ -27,7 +30,7 @@ type Peer struct {
 
 	raft *raft.Raft // The consensus mechanism
 
-	fsmStore kvstore.KvStore
+	fsmStore *fsm
 }
 
 func NewPeer(dir, bind string) *Peer {
@@ -52,9 +55,8 @@ func (s *Peer) Set(bucket, k, v string) error {
 		return e
 	}
 
-	c := NewFsmCommand(FsmCommandSet)
-	c.Key = s.buildKey(bucket, k)
-	c.Value = v
+	c := newFsmCommand(FsmCommandSet)
+	c.Kv[s.buildKey(bucket, k)] = v
 
 	b, err := json.Marshal(c)
 	if err != nil {
@@ -79,7 +81,7 @@ func (s *Peer) Get(bucket, k string) (result string, found bool, e error) {
 	bb := []byte(bucket)
 	newBB := kvstore.AppendBytes(FsmBucketLength+len(bb), FsmBucket, bb)
 
-	val, f, err := s.fsmStore.Get(newBB, []byte(k))
+	val, f, err := s.fsmStore.get(newBB, []byte(k))
 	return string(val), f, err
 }
 
@@ -108,7 +110,7 @@ func (s *Peer) PGet(bucket string, keys []string) (map[string]string, error) {
 	bb := []byte(bucket)
 	newBB := kvstore.AppendBytes(FsmBucketLength+len(bb), FsmBucket, bb)
 
-	vals, err := s.fsmStore.PGet(newBB, kb)
+	vals, err := s.fsmStore.pget(newBB, kb)
 	if err != nil {
 		return nil, err
 	}
@@ -126,8 +128,8 @@ func (s *Peer) Delete(bucket, key string) error {
 		return e
 	}
 
-	c := NewFsmCommand(FsmCommandDel)
-	c.Key = s.buildKey(bucket, key)
+	c := newFsmCommand(FsmCommandDel)
+	c.Kv[s.buildKey(bucket, key)] = ""
 
 	b, err := json.Marshal(c)
 	if err != nil {
@@ -163,7 +165,7 @@ func (s *Peer) Keys(bucket string) (map[string]string, error) {
 	bb := []byte(bucket)
 	nbb := kvstore.AppendBytes(FsmBucketLength+len(bb), FsmBucket, bb)
 
-	keys, vals, err := s.fsmStore.Keys(nbb)
+	keys, vals, err := s.fsmStore.keys(nbb)
 	if err != nil {
 		return nil, errors2.Wrap(err, fmt.Sprintf("failed to keys in bucket: %s", bucket))
 	}
@@ -213,7 +215,7 @@ func (s *Peer) Open(enableSingle bool, localID string) error {
 
 	// Create the snapshot store. This allows the Raft to truncate the log.
 	snapshots, err := raft.NewFileSnapshotStoreWithLogger(s.RaftDir, retainSnapshotCount, hclog.New(&hclog.LoggerOptions{
-		Name:   "raft.snapshot",
+		Name:   snapshotStoreDir,
 		Output: os.Stderr,
 		Level:  hclog.DefaultLevel,
 	}))
@@ -221,20 +223,26 @@ func (s *Peer) Open(enableSingle bool, localID string) error {
 		return fmt.Errorf("file snapshot store: %s", err)
 	}
 
-	badgerStore, err := NewBadgerStore(filepath.Join(s.RaftDir, "raft.log"), false)
+	// Create raft log store
+	logStore, err := newLogStore(filepath.Join(s.RaftDir, logStoreDir), false)
 	if err != nil {
 		return fmt.Errorf("new badger store: %s", err)
 	}
 
+	// Create fsm store
+	fsmStore := newFsm(logStore.db)
+
+	// Create stable store
+	stableStore := newStableStore(logStore.db)
+
 	// Instantiate the Raft systems.
-	ra, err := raft.NewRaft(config, badgerStore, badgerStore, badgerStore, snapshots, transport)
+	ra, err := raft.NewRaft(config, fsmStore, logStore, stableStore, snapshots, transport)
 	if err != nil {
 		return fmt.Errorf("new raft: %s", err)
 	}
-	s.raft = ra
 
-	// Local fsm store
-	s.fsmStore = badgerStore.db
+	s.raft = ra
+	s.fsmStore = fsmStore
 
 	if enableSingle {
 		configuration := raft.Configuration{
