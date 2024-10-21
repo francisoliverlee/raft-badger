@@ -17,15 +17,15 @@ const (
 
 var (
 	EmptyBucket       = []byte{}
-	EmptyBucketLength = 0
+	EmptyBucketLength = len(EmptyBucket)
 
-	LogBucket       = []byte("_rbl_") // raft badger log
+	LogBucket       = []byte("_rlb_") // raft log bucket
 	LogBucketLength = len(LogBucket)
 
-	ConfigBucket       = []byte("_rbl_cf_") // raft badger log config
-	ConfigBucketLength = len(ConfigBucket)
+	StableBucket       = []byte("_rsl_") // raft stable log
+	StableBucketLength = len(StableBucket)
 
-	FsmBucket       = []byte("_fmsl_") // raft badger log config
+	FsmBucket       = []byte("_rfb_") // raft fsm bucket
 	FsmBucketLength = len(FsmBucket)
 
 	firstIndexKey = []byte("_first_k")
@@ -78,7 +78,7 @@ func (b *logStore) getFirstIndex() (uint64, error) {
 	if err == nil {
 		return bytesToUint64(val), nil
 	} else {
-		if errors.Is(err, badger.ErrKeyNotFound) {
+		if errors.Is(err, kvstore.KeyNotFoundError) {
 			return 0, nil
 		}
 		return 0, err
@@ -94,7 +94,7 @@ func (b *logStore) getLastIndex() (uint64, error) {
 	if err == nil {
 		return bytesToUint64(val), nil
 	} else {
-		if errors.Is(err, badger.ErrKeyNotFound) {
+		if errors.Is(err, kvstore.KeyNotFoundError) {
 			return 0, nil
 		}
 		return 0, err

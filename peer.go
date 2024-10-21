@@ -78,10 +78,8 @@ func (s *Peer) Set(bucket, k, v string) error {
 
 // Get a kv on any peer
 func (s *Peer) Get(bucket, k string) (result string, found bool, e error) {
-	bb := []byte(bucket)
-	newBB := kvstore.AppendBytes(FsmBucketLength+len(bb), FsmBucket, bb)
-
-	val, f, err := s.fsmStore.get(newBB, []byte(k))
+	newKey := s.buildKey(bucket, k)
+	val, f, err := s.fsmStore.get([]byte(newKey))
 	return string(val), f, err
 }
 
@@ -107,10 +105,7 @@ func (s *Peer) PGet(bucket string, keys []string) (map[string]string, error) {
 		kb = append(kb, []byte(k))
 	}
 
-	bb := []byte(bucket)
-	newBB := kvstore.AppendBytes(FsmBucketLength+len(bb), FsmBucket, bb)
-
-	vals, err := s.fsmStore.pget(newBB, kb)
+	vals, err := s.fsmStore.pget(kb)
 	if err != nil {
 		return nil, err
 	}

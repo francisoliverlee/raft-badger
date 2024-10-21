@@ -81,6 +81,7 @@ func (c FsmCommand) ok() bool {
 
 // Apply a log to user's local fsm after it's commited
 func (b *fsm) Apply(l *raft.Log) interface{} {
+	kvstore.L("Apply", []byte(l.Type.String()))
 	var c = newFsmCommand("")
 	if err := json.Unmarshal(l.Data, &c); err != nil {
 		c.Error = errors2.Wrap(err, fmt.Sprintf("failed to apply. unmarshal log error, index: %d", l.Index))
@@ -107,11 +108,11 @@ func (b *fsm) Apply(l *raft.Log) interface{} {
 	switch c.Op {
 	case FsmCommandSet:
 		if err := b.db.PSet(FsmBucket, keys, values); err != nil {
-			c.Error = errors2.Wrap(err, fmt.Sprintf("failed to apply %s, bucket: %s, key=%s", c.Op, c.Bucket))
+			c.Error = errors2.Wrap(err, fmt.Sprintf("failed to apply %s, bucket: %s", c.Op, c.Bucket))
 		}
 	case FsmCommandDel:
 		if err := b.db.DeleteKeys(FsmBucket, keys); err != nil {
-			c.Error = errors2.Wrap(err, fmt.Sprintf("failed to apply %s, bucket: %s, key=%s", c.Op, c.Bucket))
+			c.Error = errors2.Wrap(err, fmt.Sprintf("failed to apply %s, bucket: %s", c.Op, c.Bucket))
 		}
 	}
 	return c
@@ -174,31 +175,35 @@ func (b *fsm) ApplyBatch(logs []*raft.Log) []interface{} {
 }
 
 // get from fsm
-func (b *fsm) get(bucket, k []byte) (result []byte, found bool, e error) {
-	return b.db.Get(bucket, k)
+func (b *fsm) get(k []byte) (result []byte, found bool, e error) {
+	return b.db.Get(FsmBucket, k)
 }
 
 // pget from fsm
-func (b *fsm) pget(bucket []byte, keys [][]byte) ([][]byte, error) {
-	return b.db.PGet(bucket, keys)
+func (b *fsm) pget(keys [][]byte) ([][]byte, error) {
+	return b.db.PGet(FsmBucket, keys)
 }
 
 // keys all in fsm
-func (b *fsm) keys(bucket []byte) (keys [][]byte, values [][]byte, err error) {
-	return b.db.Keys(bucket)
+func (b *fsm) keys(userBucket []byte) (keys [][]byte, values [][]byte, err error) {
+	prefix := kvstore.AppendBytes(FsmBucketLength+len(userBucket), FsmBucket, userBucket)
+	return b.db.Keys(prefix)
 }
 
 // keys all in fsm
-func (b *fsm) keyStrings(bucket []byte) (keys []string, values [][]byte, err error) {
-	return b.db.KeyStrings(bucket)
+func (b *fsm) keyStrings(userBucket []byte) (keys []string, values [][]byte, err error) {
+	prefix := kvstore.AppendBytes(FsmBucketLength+len(userBucket), FsmBucket, userBucket)
+	return b.db.KeyStrings(prefix)
 }
 
 // keys all in fsm without return values
-func (b *fsm) keysWithoutValues(bucket []byte) (keys [][]byte, err error) {
-	return b.db.KeysWithoutValues(bucket)
+func (b *fsm) keysWithoutValues(userBucket []byte) (keys [][]byte, err error) {
+	prefix := kvstore.AppendBytes(FsmBucketLength+len(userBucket), FsmBucket, userBucket)
+	return b.db.KeysWithoutValues(prefix)
 }
 
 // keys all in fsm without return values
-func (b *fsm) keyStringsWithoutValues(bucket []byte) (keys []string, err error) {
-	return b.db.KeyStringsWithoutValues(bucket)
+func (b *fsm) keyStringsWithoutValues(userBucket []byte) (keys []string, err error) {
+	prefix := kvstore.AppendBytes(FsmBucketLength+len(userBucket), FsmBucket, userBucket)
+	return b.db.KeyStringsWithoutValues(prefix)
 }
