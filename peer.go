@@ -194,7 +194,7 @@ func (s *Peer) Close() error {
 }
 
 // Open a peer, ready to do join or joined by other peers
-func (s *Peer) Open(enableSingle bool, localID string) error {
+func (s *Peer) Open(localID string) error {
 	config := raft.DefaultConfig()
 	config.LocalID = raft.ServerID(localID)
 
@@ -230,7 +230,12 @@ func (s *Peer) Open(enableSingle bool, localID string) error {
 	// Create stable store
 	stableStore := newStableStore(logStore.db)
 
-	// Instantiate the Raft systems.
+	// Check exist peer or not
+	exist, err := raft.HasExistingState(logStore, stableStore, snapshots)
+	if err != nil {
+		return err
+	}
+
 	ra, err := raft.NewRaft(config, fsmStore, logStore, stableStore, snapshots, transport)
 	if err != nil {
 		return fmt.Errorf("new raft: %s", err)
@@ -239,7 +244,7 @@ func (s *Peer) Open(enableSingle bool, localID string) error {
 	s.raft = ra
 	s.fsmStore = fsmStore
 
-	if enableSingle {
+	if !exist { // init a whole new peer
 		configuration := raft.Configuration{
 			Servers: []raft.Server{
 				{
@@ -249,6 +254,10 @@ func (s *Peer) Open(enableSingle bool, localID string) error {
 			},
 		}
 		ra.BootstrapCluster(configuration)
+		log.Printf("BootstrapCluster new")
+	} else {
+		ra.BootstrapCluster(ra.GetConfiguration().Configuration())
+		log.Printf("BootstrapCluster an old")
 	}
 
 	return nil
@@ -286,6 +295,7 @@ func (s *Peer) Join(nodeID, addr string) error {
 	if f.Error() != nil {
 		return f.Error()
 	}
+
 	log.Printf("node %s at %s joined successfully", nodeID, addr)
 	return nil
 }
