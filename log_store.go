@@ -25,7 +25,7 @@ var (
 	StableBucket       = []byte("_rsl_") // raft stable log
 	StableBucketLength = len(StableBucket)
 
-	FsmBucket       = []byte("_rfb_") // raft fsm bucket
+	FsmBucket       = []byte("_rfb_") // raft fsmStore bucket
 	FsmBucketLength = len(FsmBucket)
 
 	firstIndexKey = []byte("_first_k")

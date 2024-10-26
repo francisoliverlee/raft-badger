@@ -25,24 +25,159 @@ const (
 )
 
 type Peer struct {
+	Id       string
 	RaftDir  string
 	RaftBind string
 
-	raft *raft.Raft // The consensus mechanism
+	raft             *raft.Raft // The consensus mechanism
+	hasExistingState bool
 
-	fsmStore *fsm
+	snpss *raft.FileSnapshotStore
+	ls    *logStore
+	fs    *fsmStore
+	ss    *stableStore
 }
 
-func NewPeer(dir, bind string) *Peer {
+func NewPeer(id, dir, bind string) *Peer {
 	return &Peer{
+		Id:       id,
 		RaftDir:  dir,
 		RaftBind: bind,
 	}
 }
 
+/*
+Open a peer, ready to do join or joined by other peers
+@localID peer id
+@exist is useful when @err is nil
+*/
+func (p *Peer) Open() (err error) {
+	config := raft.DefaultConfig()
+	config.LocalID = raft.ServerID(p.Id)
+
+	// Setup Raft communication.
+	addr, err := net.ResolveTCPAddr("tcp", p.RaftBind)
+	if err != nil {
+		return err
+	}
+
+	// Create raft transportation for peer-to-peer-call for raft state change
+	transport, err := raft.NewTCPTransport(p.RaftBind, addr, 3, 10*time.Second, os.Stderr)
+	if err != nil {
+		return err
+	}
+
+	// Create the snapshot store. This allows the Raft to truncate the log.
+	if snpss, err := raft.NewFileSnapshotStoreWithLogger(p.RaftDir, retainSnapshotCount, hclog.New(&hclog.LoggerOptions{
+		Name:   snapshotStoreDir,
+		Output: os.Stderr,
+		Level:  hclog.DefaultLevel,
+	})); err != nil {
+		return fmt.Errorf("file snapshot store: %s", err)
+	} else {
+		p.snpss = snpss
+	}
+
+	// Create raft log store
+	if logStore, err := newLogStore(filepath.Join(p.RaftDir, logStoreDir), false); err != nil {
+		return fmt.Errorf("new badger store: %s", err)
+	} else {
+		p.ls = logStore
+	}
+	// Create local fsmStore store
+	p.fs = newFsm(p.ls.db)
+
+	// Create raft stable store
+	p.ss = newStableStore(p.ls.db)
+
+	ra, err := raft.NewRaft(config, p.fs, p.ls, p.ss, p.snpss, transport)
+	if err != nil {
+		return fmt.Errorf("new raft: %s", err)
+	}
+
+	p.raft = ra
+	if existingState, e := raft.HasExistingState(p.ls, p.ss, p.snpss); e != nil {
+		return err
+	} else {
+		p.hasExistingState = existingState
+	}
+	return nil
+}
+
+// StartSingle raft peer
+func (p *Peer) StartSingle() error {
+	log.Printf("BootstrapCluster single as leader peer, id=%s, address=%s, hasExistingState=%v", p.Id, p.RaftBind, p.hasExistingState)
+	configuration := raft.Configuration{
+		Servers: []raft.Server{
+			{
+				ID:      raft.ServerID(p.Id),
+				Address: raft.ServerAddress(p.RaftBind),
+			},
+		},
+	}
+	return p.raft.BootstrapCluster(configuration).Error()
+}
+
+// Join a raft cluster
+func (p *Peer) Join(peerId, addr string) error {
+	log.Printf("received join request for remote node %s at %s", peerId, addr)
+	if p.raft.State() != raft.Leader {
+		return errors.New(fmt.Sprintf("join should run on leader. peer id=%s, address=%s", peerId, addr))
+	}
+	configFuture := p.raft.GetConfiguration()
+	if err := configFuture.Error(); err != nil {
+		log.Printf("failed to get raft configuration: %v", err)
+		return err
+	}
+
+	if err := p.Remove(peerId, addr); err != nil {
+		return err
+	}
+
+	f := p.raft.AddVoter(raft.ServerID(peerId), raft.ServerAddress(addr), 0, 0)
+	if f.Error() != nil {
+		return f.Error()
+	}
+
+	log.Printf("node %s at %s joined successfully", peerId, addr)
+	return nil
+}
+
+// Remove a peer
+func (p *Peer) Remove(peerId, addr string) error {
+	log.Printf("received Remove request for remote node %s at %s", peerId, addr)
+	if p.raft.State() != raft.Leader {
+		return errors.New(fmt.Sprintf("leave should run on leader. peer id=%s, address=%s", peerId, addr))
+	}
+
+	for _, srv := range p.raft.GetConfiguration().Configuration().Servers {
+		// If a node already exists with either the joining node'p ID or address,
+		// that node may need to be removed from the config first.
+		if srv.ID == raft.ServerID(peerId) || srv.Address == raft.ServerAddress(addr) {
+			// However if *both* the ID and the address are the same, then nothing -- not even
+			// a join operation -- is needed.
+			if srv.Address == raft.ServerAddress(addr) && srv.ID == raft.ServerID(peerId) {
+				log.Printf("node %s at %s already member of cluster, ignoring join request", peerId, addr)
+				return nil
+			}
+
+			future := p.raft.RemoveServer(srv.ID, 0, 0)
+			idx := future.Index()
+			err := future.Error()
+
+			log.Printf("response Remove request for remote node %s at %s, idx %d, err %v", peerId, addr, idx, err)
+			if err != nil {
+				return fmt.Errorf("error removing existing node %s at %s: %s", peerId, addr, err)
+			}
+		}
+	}
+
+	return nil
+}
+
 // MakeSureLeader user set, delete should on leader. no need to read
-func (s *Peer) MakeSureLeader() error {
-	if s.raft.State() == raft.Leader {
+func (p *Peer) MakeSureLeader() error {
+	if p.raft.State() == raft.Leader {
 		return nil
 	} else {
 		return errors.New("not leader")
@@ -50,20 +185,20 @@ func (s *Peer) MakeSureLeader() error {
 }
 
 // Set a kv on leader
-func (s *Peer) Set(bucket, k, v string) error {
-	if e := s.MakeSureLeader(); e != nil {
+func (p *Peer) Set(bucket, k, v string) error {
+	if e := p.MakeSureLeader(); e != nil {
 		return e
 	}
 
 	c := newFsmCommand(FsmCommandSet)
-	c.Kv[s.buildKey(bucket, k)] = v
+	c.Kv[p.buildKey(bucket, k)] = v
 
 	b, err := json.Marshal(c)
 	if err != nil {
 		return err
 	}
 
-	f := s.raft.Apply(b, raftTimeout)
+	f := p.raft.Apply(b, raftTimeout)
 	if e1 := f.Error(); e1 != nil {
 		return e1
 	}
@@ -71,26 +206,26 @@ func (s *Peer) Set(bucket, k, v string) error {
 	var c2, ok = f.Response().(FsmCommand)
 	if !ok {
 		log.Printf("[Error] %s should got FsmCommand but not. Response: %v", c.Op, f.Response())
-		return errors.New("fsm response type error")
+		return errors.New("fsmStore response type error")
 	}
 	return c2.Error
 }
 
 // Get a kv on any peer
-func (s *Peer) Get(bucket, k string) (result string, found bool, e error) {
-	newKey := s.buildKey(bucket, k)
-	val, f, err := s.fsmStore.get([]byte(newKey))
+func (p *Peer) Get(bucket, k string) (result string, found bool, e error) {
+	newKey := p.buildKey(bucket, k)
+	val, f, err := p.fs.get([]byte(newKey))
 	return string(val), f, err
 }
 
 // PSet multi kv on leader, Non-atomic operation
-func (s *Peer) PSet(bucket string, kv map[string]string) error {
-	if e := s.MakeSureLeader(); e != nil {
+func (p *Peer) PSet(bucket string, kv map[string]string) error {
+	if e := p.MakeSureLeader(); e != nil {
 		return e
 	}
 
 	for k, v := range kv {
-		if err := s.Set(bucket, k, v); err != nil {
+		if err := p.Set(bucket, k, v); err != nil {
 			return err
 		}
 	}
@@ -99,13 +234,13 @@ func (s *Peer) PSet(bucket string, kv map[string]string) error {
 }
 
 // PGet multi keys' values on any peer
-func (s *Peer) PGet(bucket string, keys []string) (map[string]string, error) {
-	kb := [][]byte{}
+func (p *Peer) PGet(bucket string, keys []string) (map[string]string, error) {
+	kba := [][]byte{}
 	for _, k := range keys {
-		kb = append(kb, []byte(k))
+		kba = append(kba, []byte(p.buildKey(bucket, k)))
 	}
 
-	vals, err := s.fsmStore.pget(kb)
+	vals, err := p.fs.pget(kba)
 	if err != nil {
 		return nil, err
 	}
@@ -118,20 +253,20 @@ func (s *Peer) PGet(bucket string, keys []string) (map[string]string, error) {
 }
 
 // Delete a kv on leader
-func (s *Peer) Delete(bucket, key string) error {
-	if e := s.MakeSureLeader(); e != nil {
+func (p *Peer) Delete(bucket, key string) error {
+	if e := p.MakeSureLeader(); e != nil {
 		return e
 	}
 
 	c := newFsmCommand(FsmCommandDel)
-	c.Kv[s.buildKey(bucket, key)] = ""
+	c.Kv[p.buildKey(bucket, key)] = ""
 
 	b, err := json.Marshal(c)
 	if err != nil {
 		return err
 	}
 
-	f := s.raft.Apply(b, raftTimeout)
+	f := p.raft.Apply(b, raftTimeout)
 
 	if e1 := f.Error(); e1 != nil {
 		return e1
@@ -140,15 +275,15 @@ func (s *Peer) Delete(bucket, key string) error {
 	var c2, ok = f.Response().(FsmCommand)
 	if !ok {
 		log.Printf("[Error] %s should got FsmCommand but not. Response: %v", c.Op, f.Response())
-		return errors.New("fsm response type error")
+		return errors.New("fsmStore response type error")
 	}
 	return c2.Error
 }
 
 // PDelete multi kv on leader, Non-atomic operation
-func (s *Peer) PDelete(bucket string, keys []string) error {
+func (p *Peer) PDelete(bucket string, keys []string) error {
 	for _, key := range keys {
-		if err := s.Delete(bucket, key); err != nil {
+		if err := p.Delete(bucket, key); err != nil {
 			return err
 		}
 	}
@@ -156,11 +291,11 @@ func (s *Peer) PDelete(bucket string, keys []string) error {
 }
 
 // Keys all in bucket
-func (s *Peer) Keys(bucket string) (map[string]string, error) {
+func (p *Peer) Keys(bucket string) (map[string]string, error) {
 	bb := []byte(bucket)
 	nbb := kvstore.AppendBytes(FsmBucketLength+len(bb), FsmBucket, bb)
 
-	keys, vals, err := s.fsmStore.keys(nbb)
+	keys, vals, err := p.fs.keys(nbb)
 	if err != nil {
 		return nil, errors2.Wrap(err, fmt.Sprintf("failed to keys in bucket: %s", bucket))
 	}
@@ -183,128 +318,49 @@ func (s *Peer) Keys(bucket string) (map[string]string, error) {
 }
 
 // KeysWithoutValues in bucket
-func (s *Peer) KeysWithoutValues(bucket string) (keys []string, err error) {
-	m, e := s.Keys(bucket)
+func (p *Peer) KeysWithoutValues(bucket string) (keys []string, err error) {
+	m, e := p.Keys(bucket)
 	return MKeys(m), e
 }
 
 // Close peer
-func (s *Peer) Close() error {
-	return s.raft.Shutdown().Error()
-}
-
-// Open a peer, ready to do join or joined by other peers
-func (s *Peer) Open(localID string) error {
-	config := raft.DefaultConfig()
-	config.LocalID = raft.ServerID(localID)
-
-	// Setup Raft communication.
-	addr, err := net.ResolveTCPAddr("tcp", s.RaftBind)
-	if err != nil {
+func (p *Peer) Close() error {
+	if err := p.raft.Shutdown().Error(); err != nil {
 		return err
 	}
-	transport, err := raft.NewTCPTransport(s.RaftBind, addr, 3, 10*time.Second, os.Stderr)
-	if err != nil {
+	if err := p.ls.Close(); err != nil {
 		return err
 	}
-
-	// Create the snapshot store. This allows the Raft to truncate the log.
-	snapshots, err := raft.NewFileSnapshotStoreWithLogger(s.RaftDir, retainSnapshotCount, hclog.New(&hclog.LoggerOptions{
-		Name:   snapshotStoreDir,
-		Output: os.Stderr,
-		Level:  hclog.DefaultLevel,
-	}))
-	if err != nil {
-		return fmt.Errorf("file snapshot store: %s", err)
-	}
-
-	// Create raft log store
-	logStore, err := newLogStore(filepath.Join(s.RaftDir, logStoreDir), false)
-	if err != nil {
-		return fmt.Errorf("new badger store: %s", err)
-	}
-
-	// Create fsm store
-	fsmStore := newFsm(logStore.db)
-
-	// Create stable store
-	stableStore := newStableStore(logStore.db)
-
-	// Check exist peer or not
-	exist, err := raft.HasExistingState(logStore, stableStore, snapshots)
-	if err != nil {
-		return err
-	}
-
-	ra, err := raft.NewRaft(config, fsmStore, logStore, stableStore, snapshots, transport)
-	if err != nil {
-		return fmt.Errorf("new raft: %s", err)
-	}
-
-	s.raft = ra
-	s.fsmStore = fsmStore
-
-	if !exist { // init a whole new peer
-		configuration := raft.Configuration{
-			Servers: []raft.Server{
-				{
-					ID:      config.LocalID,
-					Address: transport.LocalAddr(),
-				},
-			},
-		}
-		ra.BootstrapCluster(configuration)
-		log.Printf("BootstrapCluster new")
-	} else {
-		ra.BootstrapCluster(ra.GetConfiguration().Configuration())
-		log.Printf("BootstrapCluster an old")
-	}
-
 	return nil
 }
 
-// Join a raft cluster
-func (s *Peer) Join(nodeID, addr string) error {
-	log.Printf("received join request for remote node %s at %s", nodeID, addr)
-
-	configFuture := s.raft.GetConfiguration()
-	if err := configFuture.Error(); err != nil {
-		log.Printf("failed to get raft configuration: %v", err)
-		return err
-	}
-
-	for _, srv := range configFuture.Configuration().Servers {
-		// If a node already exists with either the joining node's ID or address,
-		// that node may need to be removed from the config first.
-		if srv.ID == raft.ServerID(nodeID) || srv.Address == raft.ServerAddress(addr) {
-			// However if *both* the ID and the address are the same, then nothing -- not even
-			// a join operation -- is needed.
-			if srv.Address == raft.ServerAddress(addr) && srv.ID == raft.ServerID(nodeID) {
-				log.Printf("node %s at %s already member of cluster, ignoring join request", nodeID, addr)
-				return nil
-			}
-
-			future := s.raft.RemoveServer(srv.ID, 0, 0)
-			if err := future.Error(); err != nil {
-				return fmt.Errorf("error removing existing node %s at %s: %s", nodeID, addr, err)
-			}
-		}
-	}
-
-	f := s.raft.AddVoter(raft.ServerID(nodeID), raft.ServerAddress(addr), 0, 0)
-	if f.Error() != nil {
-		return f.Error()
-	}
-
-	log.Printf("node %s at %s joined successfully", nodeID, addr)
-	return nil
+/*
+applied_index:2
+commit_index:2
+fsm_pending:0
+last_contact:0
+last_log_index:2
+last_log_term:2
+last_snapshot_index:0
+last_snapshot_term:0
+latest_configuration:[{Suffrage:Voter
+ID:node0
+Address:127.0.0.1:0}]
+latest_configuration_index:0
+num_peers:0
+protocol_version:3
+protocol_version_max:3
+protocol_version_min:0
+snapshot_version_max:1
+snapshot_version_min:0
+state:Leader
+term:2
+*/
+func (p *Peer) Stats() map[string]string {
+	return p.raft.Stats()
 }
 
-func (s *Peer) Stats() map[string]string {
-	return s.raft.Stats()
-}
-
-func (s *Peer) buildKey(bucket, key string) string {
+func (p *Peer) buildKey(bucket, key string) string {
 	if len(bucket) == 0 {
 		return key
 	}

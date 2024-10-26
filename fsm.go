@@ -12,7 +12,7 @@ import (
 	"log"
 )
 
-type fsm struct {
+type fsmStore struct {
 	db kvstore.KvStore
 }
 
@@ -25,8 +25,8 @@ type FsmCommand struct {
 }
 
 // based on a kv store
-func newFsm(db kvstore.KvStore) *fsm {
-	return &fsm{
+func newFsm(db kvstore.KvStore) *fsmStore {
+	return &fsmStore{
 		db: db,
 	}
 }
@@ -79,8 +79,8 @@ func (c FsmCommand) ok() bool {
 	return ok
 }
 
-// Apply a log to user's local fsm after it's commited
-func (b *fsm) Apply(l *raft.Log) interface{} {
+// Apply a log to user's local fsmStore after it's commited
+func (b *fsmStore) Apply(l *raft.Log) interface{} {
 	kvstore.L("Apply", []byte(l.Type.String()))
 	var c = newFsmCommand("")
 	if err := json.Unmarshal(l.Data, &c); err != nil {
@@ -120,7 +120,7 @@ func (b *fsm) Apply(l *raft.Log) interface{} {
 
 // Snapshot The Snapshot implementation should return quickly, because Apply can not
 // be called while Snapshot is running
-func (b *fsm) Snapshot() (raft.FSMSnapshot, error) {
+func (b *fsmStore) Snapshot() (raft.FSMSnapshot, error) {
 	kvMap := map[string]string{}
 
 	if keys, vals, err := b.db.KeyStrings(FsmBucket); err != nil {
@@ -137,7 +137,7 @@ func (b *fsm) Snapshot() (raft.FSMSnapshot, error) {
 // Restore is used to restore an FSM from a snapshot. It is not called
 // concurrently with any other command. The FSM must discard all previous
 // state before restoring the snapshot.
-func (b *fsm) Restore(rc io.ReadCloser) error {
+func (b *fsmStore) Restore(rc io.ReadCloser) error {
 	newKv := make(map[string]string)
 	if err := json.NewDecoder(rc).Decode(&newKv); err != nil {
 		return err
@@ -166,7 +166,7 @@ func (b *fsm) Restore(rc io.ReadCloser) error {
 }
 
 // ApplyBatch not an atomic operation
-func (b *fsm) ApplyBatch(logs []*raft.Log) []interface{} {
+func (b *fsmStore) ApplyBatch(logs []*raft.Log) []interface{} {
 	var res []interface{}
 	for _, l := range logs {
 		res = append(res, b.Apply(l))
@@ -174,36 +174,40 @@ func (b *fsm) ApplyBatch(logs []*raft.Log) []interface{} {
 	return res
 }
 
-// get from fsm
-func (b *fsm) get(k []byte) (result []byte, found bool, e error) {
+// get from fsmStore
+func (b *fsmStore) get(k []byte) (result []byte, found bool, e error) {
 	return b.db.Get(FsmBucket, k)
 }
 
-// pget from fsm
-func (b *fsm) pget(keys [][]byte) ([][]byte, error) {
+// pget from fsmStore
+func (b *fsmStore) pget(keys [][]byte) ([][]byte, error) {
 	return b.db.PGet(FsmBucket, keys)
 }
 
-// keys all in fsm
-func (b *fsm) keys(userBucket []byte) (keys [][]byte, values [][]byte, err error) {
+// keys all in fsmStore
+func (b *fsmStore) keys(userBucket []byte) (keys [][]byte, values [][]byte, err error) {
 	prefix := kvstore.AppendBytes(FsmBucketLength+len(userBucket), FsmBucket, userBucket)
 	return b.db.Keys(prefix)
 }
 
-// keys all in fsm
-func (b *fsm) keyStrings(userBucket []byte) (keys []string, values [][]byte, err error) {
+// keys all in fsmStore
+func (b *fsmStore) keyStrings(userBucket []byte) (keys []string, values [][]byte, err error) {
 	prefix := kvstore.AppendBytes(FsmBucketLength+len(userBucket), FsmBucket, userBucket)
 	return b.db.KeyStrings(prefix)
 }
 
-// keys all in fsm without return values
-func (b *fsm) keysWithoutValues(userBucket []byte) (keys [][]byte, err error) {
+// keys all in fsmStore without return values
+func (b *fsmStore) keysWithoutValues(userBucket []byte) (keys [][]byte, err error) {
 	prefix := kvstore.AppendBytes(FsmBucketLength+len(userBucket), FsmBucket, userBucket)
 	return b.db.KeysWithoutValues(prefix)
 }
 
-// keys all in fsm without return values
-func (b *fsm) keyStringsWithoutValues(userBucket []byte) (keys []string, err error) {
+// keys all in fsmStore without return values
+func (b *fsmStore) keyStringsWithoutValues(userBucket []byte) (keys []string, err error) {
 	prefix := kvstore.AppendBytes(FsmBucketLength+len(userBucket), FsmBucket, userBucket)
 	return b.db.KeyStringsWithoutValues(prefix)
+}
+
+func (p *fsmStore) Close() error {
+	return p.db.Close()
 }

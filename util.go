@@ -71,3 +71,8 @@ func MKeys(m map[string]string) []string {
 	}
 	return keys
 }
+
+func toJsonStringTest(v any) string {
+	b, _ := json.MarshalIndent(v, "", "\t")
+	return string(b)
+}

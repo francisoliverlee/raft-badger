@@ -41,10 +41,10 @@ func testRaftLog(idx uint64, data string) *raft.Log {
 func TestBadgerStore_Implements(t *testing.T) {
 	var store interface{} = &logStore{}
 	if _, ok := store.(raft.StableStore); !ok {
-		t.Fatalf("logStore does not implement raft.StableStore")
+		t.Fatalf("ls does not implement raft.StableStore")
 	}
 	if _, ok := store.(raft.LogStore); !ok {
-		t.Fatalf("logStore does not implement raft.LogStore")
+		t.Fatalf("ls does not implement raft.LogStore")
 	}
 }
 
