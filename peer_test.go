@@ -1,7 +1,9 @@
 package raft_badger
 
 import (
+	"errors"
 	"fmt"
+	kvstore "github.com/gmqio/kv-store"
 	"github.com/hashicorp/raft"
 	"github.com/stretchr/testify/assert"
 	"io/ioutil"
@@ -873,4 +875,104 @@ func TestSetGetOnRestartPeer(t *testing.T) {
 	} else if v != val1 {
 		t.Fatalf("val new key from old peer[%s] sync-from-leader[%s]", v, val)
 	}
+}
+
+// test set, delete, get
+func TestDelete(t *testing.T) {
+	leader := testStartSingle("node00", "127.0.0.1", 30001, t)
+	defer func() {
+		_ = os.RemoveAll(leader.RaftDir)
+	}()
+
+	key := "tiger-key"
+	val := "tiger-value"
+	if err := leader.Set(TestBucket, key, val); err != nil {
+		t.Fatalf("failed to set key %s with value %s: %s", key, val, err)
+	}
+
+	if v, _, err := leader.Get(TestBucket, key); err != nil {
+		t.Fatalf("failed to get key %s: %s", key, err)
+	} else {
+		assert.True(t, val == v)
+	}
+
+	if err := leader.Delete(TestBucket, key); err != nil {
+		t.Fatalf("failed to delete key %s with value %s: %s", key, val, err)
+	}
+
+	if _, f, err := leader.Get(TestBucket, key); !errors.Is(err, kvstore.KeyNotFoundError) {
+		t.Fatalf("failed to get key %s. should be a delted key but error %s", key, err)
+	} else {
+		assert.True(t, f == false)
+	}
+
+}
+
+// test set, p delete, get
+func TestDeleteKeys(t *testing.T) {
+	leader := testStartSingle("node00", "127.0.0.1", 30001, t)
+	defer func() {
+		_ = os.RemoveAll(leader.RaftDir)
+	}()
+
+	m := map[string]string{}
+	key := "tiger-key"
+	val := "tiger-value"
+	for i := 0; i < 100; i++ {
+		m[key+strconv.Itoa(i)] = val + strconv.Itoa(i)
+	}
+
+	if err := leader.PSet(TestBucket, m); err != nil {
+		t.Fatalf("failed to p set keya %v", err)
+	}
+
+	for k, val := range m {
+		if v, _, err := leader.Get(TestBucket, k); err != nil {
+			t.Fatalf("failed to get key %s: %s", k, err)
+		} else {
+			assert.True(t, val == v)
+		}
+	}
+
+	if err := leader.PDelete(TestBucket, MKeys(m)); err != nil {
+		t.Fatalf("failed to delete keys %v", err)
+	}
+
+	for k, _ := range m {
+		if _, f, err := leader.Get(TestBucket, k); !errors.Is(err, kvstore.KeyNotFoundError) {
+			t.Fatalf("failed to get keys %s. should be a delted key but error %s", k, err)
+		} else {
+			assert.True(t, f == false)
+		}
+	}
+}
+
+// test keys
+func TestKeys(t *testing.T) {
+	leader := testStartSingle("node00", "127.0.0.1", 30001, t)
+	defer func() {
+		_ = os.RemoveAll(leader.RaftDir)
+	}()
+
+	// gen dataå
+	m := map[string]string{}
+	key := "tiger-key"
+	val := "tiger-value"
+	for i := 0; i < 100; i++ {
+		m[key+strconv.Itoa(i)] = val + strconv.Itoa(i)
+	}
+
+	// pset data
+	if err := leader.PSet(TestBucket, m); err != nil {
+		t.Fatalf("failed to p set keys %v", err)
+	}
+
+	// scan key prefix
+	newBucket := leader.buildKey(TestBucket, key)
+	if mnew, err := leader.Keys(newBucket); err != nil {
+		t.Fatalf("failed to p set keya %v", err)
+	} else {
+		fmt.Println(mnew)
+	}
+
 }

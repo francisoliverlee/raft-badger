@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	kvstore "github.com/gmqio/kv-store"
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/raft"
 	errors2 "github.com/pkg/errors"
@@ -293,9 +292,9 @@ func (p *Peer) PDelete(bucket string, keys []string) error {
 // Keys all in bucket
 func (p *Peer) Keys(bucket string) (map[string]string, error) {
 	bb := []byte(bucket)
-	nbb := kvstore.AppendBytes(FsmBucketLength+len(bb), FsmBucket, bb)
+	//nbb := kvstore.AppendBytes(FsmBucketLength+len(bb), FsmBucket, bb)
 
-	keys, vals, err := p.fs.keys(nbb)
+	keys, vals, err := p.fs.keys(bb)
 	if err != nil {
 		return nil, errors2.Wrap(err, fmt.Sprintf("failed to keys in bucket: %s", bucket))
 	}
