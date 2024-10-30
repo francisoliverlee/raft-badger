@@ -12,6 +12,21 @@ import (
 	"log"
 )
 
+const (
+	FsmCommandSet = "Set"
+	FsmCommandDel = "Delete"
+)
+
+var (
+	FsmBucket       = []byte("raft_fsm_") // raft fsmStore bucket
+	FsmBucketLength = len(FsmBucket)
+
+	cmd = map[string]interface{}{
+		FsmCommandSet: nil,
+		FsmCommandDel: nil,
+	}
+)
+
 type fsmStore struct {
 	db kvstore.KvStore
 }
@@ -22,6 +37,10 @@ type FsmCommand struct {
 
 	Bucket string            `json:"bucket,omitempty"` // check where to be used
 	Kv     map[string]string `json:"kv,omitempty"`
+}
+
+type fsmSnapshot struct {
+	store map[string]string
 }
 
 // based on a kv store
@@ -38,8 +57,10 @@ func newFsmCommand(op string) FsmCommand {
 	}
 }
 
-type fsmSnapshot struct {
-	store map[string]string
+func newFsmSnapshot() *fsmSnapshot {
+	return &fsmSnapshot{
+		store: map[string]string{},
+	}
 }
 
 // Persist should dump all necessary state to the WriteCloser 'sink',
@@ -75,7 +96,7 @@ func (f *fsmSnapshot) Release() {
 
 // ok to check op
 func (c FsmCommand) ok() bool {
-	_, ok := FsmCmd[c.Op]
+	_, ok := cmd[c.Op]
 	return ok
 }
 
@@ -123,7 +144,7 @@ func (b *fsmStore) Apply(l *raft.Log) interface{} {
 func (b *fsmStore) Snapshot() (raft.FSMSnapshot, error) {
 	kvMap := map[string]string{}
 
-	if keys, vals, err := b.db.KeyStrings(FsmBucket); err != nil {
+	if keys, vals, err := b.db.KeyStrings(FsmBucket, FsmBucket); err != nil {
 		return &fsmSnapshot{store: kvMap}, err
 	} else {
 		for i, k := range keys {
@@ -156,7 +177,7 @@ func (b *fsmStore) Restore(rc io.ReadCloser) error {
 
 		for k, v := range newKv {
 			kb := []byte(k)
-			key := kvstore.AppendBytes(len(FsmBucket)+len(kb), FsmBucket, kb)
+			key := kvstore.BuildKey(len(FsmBucket)+len(kb), FsmBucket, kb)
 			if err := txn.Set(key, []byte(v)); err != nil {
 				return err
 			}
@@ -186,26 +207,26 @@ func (b *fsmStore) pget(keys [][]byte) ([][]byte, error) {
 
 // keys all in fsmStore
 func (b *fsmStore) keys(userBucket []byte) (keys [][]byte, values [][]byte, err error) {
-	prefix := kvstore.AppendBytes(FsmBucketLength+len(userBucket), FsmBucket, userBucket)
-	return b.db.Keys(prefix)
+	prefix := kvstore.BuildKey(FsmBucketLength+len(userBucket), FsmBucket, userBucket)
+	return b.db.Keys(FsmBucket, prefix)
 }
 
 // keys all in fsmStore
 func (b *fsmStore) keyStrings(userBucket []byte) (keys []string, values [][]byte, err error) {
-	prefix := kvstore.AppendBytes(FsmBucketLength+len(userBucket), FsmBucket, userBucket)
-	return b.db.KeyStrings(prefix)
+	prefix := kvstore.BuildKey(FsmBucketLength+len(userBucket), FsmBucket, userBucket)
+	return b.db.KeyStrings(FsmBucket, prefix)
 }
 
 // keys all in fsmStore without return values
 func (b *fsmStore) keysWithoutValues(userBucket []byte) (keys [][]byte, err error) {
-	prefix := kvstore.AppendBytes(FsmBucketLength+len(userBucket), FsmBucket, userBucket)
-	return b.db.KeysWithoutValues(prefix)
+	prefix := kvstore.BuildKey(FsmBucketLength+len(userBucket), FsmBucket, userBucket)
+	return b.db.KeysWithoutValues(FsmBucket, prefix)
 }
 
 // keys all in fsmStore without return values
 func (b *fsmStore) keyStringsWithoutValues(userBucket []byte) (keys []string, err error) {
-	prefix := kvstore.AppendBytes(FsmBucketLength+len(userBucket), FsmBucket, userBucket)
-	return b.db.KeyStringsWithoutValues(prefix)
+	prefix := kvstore.BuildKey(FsmBucketLength+len(userBucket), FsmBucket, userBucket)
+	return b.db.KeyStringsWithoutValues(FsmBucket, prefix)
 }
 
 func (p *fsmStore) Close() error {

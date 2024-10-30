@@ -5,6 +5,11 @@ import (
 	kvstore "github.com/gmqio/kv-store"
 )
 
+var (
+	StableBucket       = []byte("raft_stable_") // raft stable log
+	StableBucketLength = len(StableBucket)
+)
+
 type stableStore struct {
 	db kvstore.KvStore
 }

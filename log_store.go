@@ -10,31 +10,14 @@ import (
 	"github.com/hashicorp/raft"
 )
 
-const (
-	FsmCommandSet = "Set"
-	FsmCommandDel = "Delete"
-)
-
 var (
-	EmptyBucket       = []byte{}
-	EmptyBucketLength = len(EmptyBucket)
+	EmptyBucket []byte
 
-	LogBucket       = []byte("_rlb_") // raft log bucket
+	LogBucket       = []byte("raft_log_") // raft log
 	LogBucketLength = len(LogBucket)
 
-	StableBucket       = []byte("_rsl_") // raft stable log
-	StableBucketLength = len(StableBucket)
-
-	FsmBucket       = []byte("_rfb_") // raft fsmStore bucket
-	FsmBucketLength = len(FsmBucket)
-
-	firstIndexKey = []byte("_first_k")
-	lastIndexKey  = []byte("_last_k")
-
-	FsmCmd = map[string]interface{}{
-		FsmCommandSet: nil,
-		FsmCommandDel: nil,
-	}
+	firstIndexKey = []byte("raft_first_index")
+	lastIndexKey  = []byte("raft_last_index")
 )
 
 type logStore struct {
@@ -134,7 +117,7 @@ func (b *logStore) StoreLogs(logs []*raft.Log) error {
 	for _, rlog := range logs {
 		idxB := uint64ToBytes(rlog.Index)
 
-		newKey := kvstore.AppendBytes(LogBucketLength+8, LogBucket, idxB)
+		newKey := kvstore.BuildKey(LogBucketLength+8, LogBucket, idxB)
 		val, err := encodeRaftLog(rlog)
 
 		if err != nil {
@@ -164,7 +147,7 @@ func (b *logStore) DeleteRange(minIdx, maxIdx uint64) error {
 	// TODO optimise when diff very big, such as 1000K
 	return b.db.Exec(func(txn *badger.Txn) error {
 		for i := minIdx; i <= maxIdx; i++ {
-			newKey := kvstore.AppendBytes(LogBucketLength+8, LogBucket, uint64ToBytes(i))
+			newKey := kvstore.BuildKey(LogBucketLength+8, LogBucket, uint64ToBytes(i))
 			if err := txn.Delete(newKey); err != nil {
 				return err
 			}
