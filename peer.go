@@ -106,6 +106,9 @@ func (p *Peer) Open() (err error) {
 // StartSingle raft peer
 func (p *Peer) StartSingle() error {
 	log.Printf("BootstrapCluster single as leader peer, id=%s, address=%s, hasExistingState=%v", p.Id, p.RaftBind, p.hasExistingState)
+	if p.hasExistingState { // make sure BootstrapCluster once
+		return nil
+	}
 	configuration := raft.Configuration{
 		Servers: []raft.Server{
 			{

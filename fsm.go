@@ -102,7 +102,7 @@ func (c FsmCommand) ok() bool {
 
 // Apply a log to user's local fsmStore after it's commited
 func (b *fsmStore) Apply(l *raft.Log) interface{} {
-	kvstore.L("Apply", []byte(l.Type.String()))
+	kvstore.L("Apply", []byte(l.Type.String()), l.Data)
 	var c = newFsmCommand("")
 	if err := json.Unmarshal(l.Data, &c); err != nil {
 		c.Error = errors2.Wrap(err, fmt.Sprintf("failed to apply. unmarshal log error, index: %d", l.Index))
