@@ -106,6 +106,32 @@ func Test_StartSingle(t *testing.T) {
 	}()
 }
 
+// Test_StartSingleAgain start a single peer, start self-elect. restart it
+func Test_StartSingleAgain(t *testing.T) {
+	leader := testStartSingle("node00", "127.0.0.1", 30001, t)
+
+	if err := leader.Close(); err != nil {
+		t.Fatalf("failed to close leader: %s", err)
+	}
+	t.Log("[Test_StartSingleAgain] close it done")
+
+	if err := leader.Open(); err != nil {
+		t.Fatalf("failed to re-open leader: %s", err)
+	}
+	t.Log("[Test_StartSingleAgain] open an-old-peer done")
+
+	if err := leader.StartSingle(); err != nil {
+		t.Fatalf("failed to re-StartSingle leader: %s", err)
+	}
+	t.Log("[Test_StartSingleAgain] re-StartSingle an-old-peer done")
+
+	time.Sleep(3 * time.Second)
+	t.Log("[Test_StartSingleAgain] restart an-old-peer done")
+	defer func() {
+		_ = os.RemoveAll(leader.RaftDir)
+	}()
+}
+
 // Test_StartSingles start 3 single peers, this is wrong to start raft clusters, when first start you should JOIN-A-LEADER
 func Test_StartSingles1(t *testing.T) {
 	// start 3 peers
