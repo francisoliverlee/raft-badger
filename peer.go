@@ -23,6 +23,10 @@ const (
 	snapshotStoreDir = "raft.snapshot"
 )
 
+var (
+	foreToStartAsLeader = "yes" == os.Getenv("foreToStartAsLeader")
+)
+
 type Peer struct {
 	Id       string
 	RaftDir  string
@@ -106,9 +110,16 @@ func (p *Peer) Open() (err error) {
 // StartSingle raft peer
 func (p *Peer) StartSingle() error {
 	log.Printf("BootstrapCluster single as leader peer, id=%s, address=%s, hasExistingState=%v", p.Id, p.RaftBind, p.hasExistingState)
+	if foreToStartAsLeader { // force to start as leader
+		return p.startSingle()
+	}
 	if p.hasExistingState { // make sure BootstrapCluster once
 		return nil
 	}
+	return p.startSingle()
+}
+
+func (p *Peer) startSingle() error {
 	configuration := raft.Configuration{
 		Servers: []raft.Server{
 			{
